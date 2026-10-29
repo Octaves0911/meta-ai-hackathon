@@ -27,27 +27,39 @@ def _extract_json(text: str) -> dict:
     return json.loads(text[start : end + 1])
 
 
-async def complete_json(system: str, user: str, max_tokens: int = 1200) -> dict:
+async def _call(system: str, user: str, max_tokens: int) -> str:
     key = os.environ.get("LLM_API_KEY")
     if not key:
         raise HTTPException(status_code=503, detail="LLM_API_KEY is not configured")
     body = {
         "model": os.environ.get("LLM_MODEL") or DEFAULT_MODEL,
         "max_tokens": max_tokens,
-        "system": f"{system}\n\n{UNTRUSTED_NOTE}\nRespond with a single JSON object and nothing else.",
+        "system": f"{system}\n\n{UNTRUSTED_NOTE}",
         "messages": [{"role": "user", "content": user}],
     }
     headers = {"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
     url = os.environ.get("LLM_API_URL", DEFAULT_URL)
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            res = await client.post(url, json=body, headers=headers)
+            res.raise_for_status()
+        return res.json()["content"][0]["text"]
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"LLM provider failed: {type(e).__name__}") from e
+    except (KeyError, IndexError, ValueError) as e:
+        raise HTTPException(status_code=502, detail="LLM returned an unexpected response") from e
+
+
+async def complete_text(system: str, user: str, max_tokens: int = 3000) -> str:
+    """Free-form output (Markdown deliverables, SVG)."""
+    return (await _call(system, user, max_tokens)).strip()
+
+
+async def complete_json(system: str, user: str, max_tokens: int = 1200) -> dict:
     last: Exception | None = None
     for _ in range(2):  # one retry if the model returns malformed JSON
         try:
-            async with httpx.AsyncClient(timeout=45) as client:
-                res = await client.post(url, json=body, headers=headers)
-                res.raise_for_status()
-            return _extract_json(res.json()["content"][0]["text"])
-        except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail=f"LLM provider failed: {type(e).__name__}") from e
-        except (ValueError, KeyError, IndexError) as e:
+            return _extract_json(await _call(f"{system}\nRespond with a single JSON object and nothing else.", user, max_tokens))
+        except ValueError as e:
             last = e
     raise HTTPException(status_code=502, detail=f"LLM returned invalid output: {last}")
