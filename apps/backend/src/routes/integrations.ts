@@ -11,6 +11,9 @@ const Update = z.object({
   folderIds: z.array(z.string().max(200)).max(50).optional(), includeSubfolders: z.boolean().optional(),
 });
 
+// Absolute, so the browser lands on the web app even if Google was configured to call the backend directly.
+const web = (path: string) => `${process.env.WEB_URL ?? 'http://localhost:5173'}${path}`;
+
 export async function integrationRoutes(app: FastifyInstance) {
   async function member(projectId: string, userId: string) {
     if (!z.string().uuid().safeParse(projectId).success) throw new HttpError(404, 'not_found', 'project not found');
@@ -35,12 +38,12 @@ export async function integrationRoutes(app: FastifyInstance) {
   // Google redirects the browser here. The signed state (not a session) says who is connecting.
   app.get<{ Querystring: { code?: string; state?: string; error?: string } }>('/connections/google/callback', async (req, reply) => {
     const { code, state, error } = req.query;
-    if (error || !code || !state) return reply.redirect('/dashboard/integrations?error=cancelled');
+    if (error || !code || !state) return reply.redirect(web('/dashboard/integrations?error=cancelled'));
     try {
       await connector('/oauth/complete', { method: 'POST', json: { code, state } });
-      return reply.redirect('/dashboard/integrations?connected=1');
+      return reply.redirect(web('/dashboard/integrations?connected=1'));
     } catch (e) {
-      return reply.redirect(`/dashboard/integrations?error=${encodeURIComponent(e instanceof HttpError ? e.code : 'failed')}`);
+      return reply.redirect(web(`/dashboard/integrations?error=${encodeURIComponent(e instanceof HttpError ? e.code : 'failed')}`));
     }
   });
 

@@ -105,7 +105,12 @@ export class Connector {
   // ---- tokens -------------------------------------------------------------------------------------------------
   private async accessToken(c: any): Promise<string> {
     if (!c.token_ciphertext) throw new ConnectorError(409, 'no_token', 'reconnect Google');
-    let t = open({ ciphertext: c.token_ciphertext, iv: c.token_iv, tag: c.token_tag });
+    let t: Tokens;
+    try { t = open({ ciphertext: c.token_ciphertext, iv: c.token_iv, tag: c.token_tag }); }
+    catch { // wrong/rotated TOKEN_ENC_KEY or tampered row: never crash, ask the user to reconnect
+      await this.setError(c.id, 'Stored Google access could not be read — reconnect to continue syncing.');
+      throw new ConnectorError(409, 'reauth_required', 'reconnect Google');
+    }
     if (t.expires_at - Date.now() < 60_000) {
       try { t = await google.refresh(t); }
       catch (e) {

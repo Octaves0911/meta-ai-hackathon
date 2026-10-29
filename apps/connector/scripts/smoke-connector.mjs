@@ -110,7 +110,7 @@ const bad = await api(`/connections/google/callback?code=good&state=${state.slic
 ok('tampered state is rejected', bad.status === 302 && /error=invalid_state/.test(bad.location), bad.location);
 ok('bad authorisation code is rejected', /error=oauth_failed/.test((await api(`/connections/google/callback?code=bad-code&state=${state}`)).location ?? ''));
 const cb = await api(`/connections/google/callback?code=good-code&state=${state}`);
-ok('callback redirects back to the app', cb.status === 302 && cb.location === '/dashboard/integrations?connected=1', cb.location);
+ok('callback redirects back to the app', cb.status === 302 && cb.location === 'http://localhost:5173/dashboard/integrations?connected=1', cb.location);
 let list = await conns();
 ok('both services connected, private by default, awaiting setup', list.length === 2 && list.every((c) => c.visibility === 'private' && c.status === 'needs_setup' && c.account === 'alice@example.com' && c.isOwner), list);
 const gm = list.find((c) => c.provider === 'gmail'), dr = list.find((c) => c.provider === 'drive');
