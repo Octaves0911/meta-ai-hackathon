@@ -231,8 +231,7 @@ export class InsightService {
       questions.length && `Open questions: ${questions.map((x) => x.summary).join('; ')}.`,
     ].filter(Boolean);
     if (!parts.length) return;
-    const g = this.gov(meetingId);
-    g.recordShown({ topicKey: `brief:${meetingId}`, evidenceIds: [] });
+    // Briefs and @ai answers are not proactive interruptions: they neither start the cooldown nor use the chat-card cap.
     await this.postToChat(meetingId, { kind: 'brief', tier: 'interrupt', title: 'Since your last meeting', body: parts.join('\n'), sourceLabel: 'Earlier meetings', score: 1, topicKey: `brief:${meetingId}` });
   }
 
