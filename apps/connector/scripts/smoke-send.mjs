@@ -88,7 +88,7 @@ dDana = await det(dana);
 ok('permission state shown: send not yet allowed', dDana.send.granted === false && dDana.send.sent.length === 0, dDana.send);
 const noPerm = await send(dana, aDana);
 ok('first send asks for the separate send permission', noPerm.status === 409 && noPerm.body.error.code === 'send_permission_required' && G.sent.length === 0, noPerm.body);
-ok('failed attempt leaves no send record', (await db.query('select 1 from email_sends')).rowCount === 0);
+ok('failed attempt leaves no send record', (await db.query('select 1 from email_sends es join executions e on e.id = es.execution_id join tasks t on t.id = e.task_id where t.project_id = $1', [P.id])).rowCount === 0);
 
 // request the send permission
 const ret = `/reviews/${dana.id}?send=1`;
@@ -139,7 +139,7 @@ ok('retry after a definite failure succeeds', (await send({ id: ex }, art)).stat
 // only email drafts of the communication agent
 const research = (await db.query("insert into executions(task_id, agent, status, reviewer_id) values ((select id from tasks where meeting_id=$1 limit 1), 'research', 'approved', $2) on conflict (task_id) do update set agent = 'research' returning id", [M, id('sue')])).rows[0].id;
 ok('non-email runs cannot send', (await send({ id: research }, art)).status === 400);
-ok('send is logged in the database with a dedupe hash', (await db.query('select 1 from email_sends where message_hash is not null')).rowCount === 3);
+ok('send is logged in the database with a dedupe hash', (await db.query('select 1 from email_sends es join executions e on e.id = es.execution_id join tasks t on t.id = e.task_id where t.project_id = $1 and es.message_hash is not null', [P.id])).rowCount === 3);
 
 server.close();
 for (const u of U) await api(`/users/${id(u)}`, u, 'DELETE');
