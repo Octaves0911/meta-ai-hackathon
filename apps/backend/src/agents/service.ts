@@ -83,6 +83,8 @@ export class AgentService {
         await c.query('insert into execution_artifacts(execution_id, revision, type, title, payload) values ($1,$2,$3,$4,$5)',
           [e.id, e.revision, a.type, a.title, a.content != null ? { content: a.content } : a.payload]);
       }
+      // The collaboration log shows what this revision's work was built on, not an accumulation of earlier passes.
+      await c.query('delete from agent_consultations where execution_id = $1', [e.id]);
       for (const k of out.consultations) {
         await c.query('insert into agent_consultations(execution_id, from_agent, to_agent, question, answer, depth) values ($1,$2,$3,$4,$5,$6)',
           [e.id, k.from_agent, k.to_agent, k.question, k.answer, Math.min(Math.max(k.depth, 1), 2)]);

@@ -71,6 +71,8 @@ for (let rev = 1; rev <= 3; rev++) {
   const md = d?.artifacts.find((a) => a.type === 'markdown')?.payload.content ?? '';
   ok(`agent redid the work at revision ${rev} using the feedback`, !!d && md.includes(`round ${rev}: add pricing`) && d.reviews.length === rev, md.slice(0, 200));
 }
+const afterRevs = (await api(`/executions/${research.id}`, 'dev')).body;
+ok('collaboration log is per revision (no duplicates)', new Set(afterRevs.consultations.map((c) => `${c.fromAgent}>${c.toAgent}>${c.question}`)).size === afterRevs.consultations.length, afterRevs.consultations);
 ok('4th change request refused (max 3 revisions)', (await api(`/executions/${research.id}/review`, 'dev', 'POST', { verdict: 'changes', comment: 'again' })).status === 409);
 ok('approve completes the task', (await api(`/executions/${research.id}/review`, 'dev', 'POST', { verdict: 'approve' })).status === 204
   && (await db.query("select 1 from tasks where id=$1 and status='done'", [research.task_id])).rowCount === 1);
