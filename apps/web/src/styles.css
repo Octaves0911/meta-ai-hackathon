@@ -89,9 +89,9 @@ label { display: block; margin: 12px 0 4px; font-size: 14px; color: var(--muted)
 }
 
 /* Subtitles */
-.subtitles { position: absolute; left: 50%; bottom: 128px; transform: translateX(-50%); width: min(70%, 760px); display: grid; gap: 4px; justify-items: center; pointer-events: none; z-index: 2; transition: opacity .6s ease; }
+.subtitles { position: absolute; left: 16px; right: 232px; bottom: 128px; margin: 0 auto; max-width: 760px; display: grid; gap: 4px; justify-items: center; pointer-events: none; z-index: 2; transition: opacity .6s ease; }
 .subtitles.faded { opacity: 0; }
 .subtitle-line { background: rgba(0,0,0,.72); color: #fff; padding: 4px 12px; border-radius: 8px; font-size: 18px; line-height: 1.35; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,.5); }
 .subtitle-name { color: #ffd84d; }
 .cap-chip { position: absolute; left: 12px; top: 12px; background: rgba(0,0,0,.65); color: #fff; padding: 3px 10px; border-radius: 12px; font-size: 13px; z-index: 3; }
-@media (max-width: 900px) { .subtitles { width: 92%; bottom: 100px; } .subtitle-line { font-size: 15px; } }
+@media (max-width: 900px) { .subtitles { right: 152px; bottom: 100px; } .subtitle-line { font-size: 15px; } }
