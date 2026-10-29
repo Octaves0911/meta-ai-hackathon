@@ -181,3 +181,14 @@ export interface ConnectionView {
   account: string | null; lastSyncAt: string | null; itemCount: number; ownerId: string; ownerName: string; isOwner: boolean; lastError: string | null;
   config: { labels: string[]; lookbackDays: number; folderIds: string[]; includeSubfolders: boolean };
 }
+
+export interface WorkspaceFile {
+  id: string; path: string; kind: 'cloud' | 'local'; size: number | null; mime: string | null;
+  summary: string | null; updatedAt: string; textual: boolean;
+}
+export interface WorkspaceInfo {
+  level: 'write' | 'read'; isOwner: boolean; shareWorkspace: boolean;
+  localRoot: string | null; localEnabled: boolean; localFolders: string[]; maxUploadMb: number;
+}
+export const WorkspaceSettingsBody = z.object({ shareWorkspace: z.boolean().optional(), localRoot: z.string().max(200).nullable().optional() });
+export const SaveFileBody = z.object({ content: z.string().max(1_100_000) });

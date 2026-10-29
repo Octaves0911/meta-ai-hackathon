@@ -28,7 +28,10 @@ export async function userRoutes(app: FastifyInstance) {
     if (me.id !== req.params.id) throw new HttpError(403, 'forbidden', 'can only delete your own account');
     // Projects this account owns disappear with it, so their members' connections must be revoked too.
     const owned = await app.db.query('select id from projects where owner_id = $1', [me.id]);
-    for (const p of owned.rows) await connector(`/projects/${p.id}/purge`, { method: 'POST' }).catch((e) => app.log.error(e, 'connector purge failed'));
+    for (const p of owned.rows) {
+      await connector(`/projects/${p.id}/purge`, { method: 'POST' }).catch((e) => app.log.error(e, 'connector purge failed'));
+      await app.workspace.removeStorage(p.id).catch((e) => app.log.error(e, 'workspace cleanup failed'));
+    }
     await connector(`/users/${me.id}/purge`, { method: 'POST' }).catch((e) => app.log.error(e, 'connector purge failed'));
     await app.db.query('delete from users where id = $1', [me.id]);
     return reply.status(204).send();

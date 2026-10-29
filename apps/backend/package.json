@@ -17,9 +17,11 @@
     "smoke:captions": "node scripts/smoke-captions.mjs",
     "smoke:insights": "node --env-file=../../.env scripts/smoke-insights.mjs",
     "smoke:tasks": "node --env-file=../../.env scripts/smoke-tasks.mjs",
-    "smoke:agents": "node --env-file=../../.env scripts/smoke-agents.mjs"
+    "smoke:agents": "node --env-file=../../.env scripts/smoke-agents.mjs",
+    "smoke:workspace": "node --env-file=../../.env scripts/smoke-workspace.mjs"
   },
   "dependencies": {
+    "@fastify/multipart": "^10.1.6",
     "@meetpilot/shared": "*",
     "fastify": "^5.0.0",
     "pg": "^8.23.1",

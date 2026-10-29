@@ -75,6 +75,7 @@ export async function projectRoutes(app: FastifyInstance) {
     if ((await memberOf(req.params.id, me.id)) !== 'owner') throw new HttpError(403, 'forbidden', 'owner only');
     // Revoke Google access and delete everything indexed from this project's connections before the project goes (F9.7).
     await connector(`/projects/${req.params.id}/purge`, { method: 'POST' }).catch((e) => app.log.error(e, 'connector purge failed'));
+    await app.workspace.removeStorage(req.params.id).catch((e) => app.log.error(e, 'workspace cleanup failed'));
     await app.db.query('delete from projects where id = $1', [req.params.id]);
     return reply.status(204).send();
   });
