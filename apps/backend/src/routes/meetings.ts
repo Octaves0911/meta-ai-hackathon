@@ -5,6 +5,7 @@ import { CreateMeetingBody, type Meeting, type MeetingDetail } from '@meetpilot/
 import { requireUser, type AuthUser } from '../app.js';
 import { HttpError } from '../errors.js';
 import { createNotification } from '../services/notifications.js';
+import { flushSegment, leaveMeeting } from '../services/sessions.js';
 
 const MEETING_SELECT = `select m.*, u.username as owner_name from meetings m join users u on u.id = m.owner_id`;
 
@@ -15,17 +16,6 @@ const toMeeting = (r: any): Meeting => ({
   totalDurationSec: r.total_duration_sec, shareChatTranscript: r.share_chat_transcript,
   shareWorkspace: r.share_workspace, aiAssist: r.ai_assist, createdAt: r.created_at,
 });
-
-/** Close the open "someone is present" interval into total_duration_sec (F2.7). Caller holds a transaction. */
-async function flushSegment(c: PoolClient, meetingId: string) {
-  await c.query(
-    `update meetings set
-       total_duration_sec = total_duration_sec + coalesce(extract(epoch from now() - segment_started_at), 0)::int,
-       segment_started_at = null
-     where id = $1 and segment_started_at is not null`,
-    [meetingId],
-  );
-}
 
 export async function meetingRoutes(app: FastifyInstance) {
   async function inTx<T>(fn: (c: PoolClient) => Promise<T>): Promise<T> {
@@ -184,12 +174,7 @@ export async function meetingRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>('/meetings/:id/leave', async (req, reply) => {
     const me = await requireUser(app, req);
     const m = await loadMeeting(req.params.id, me);
-    await inTx(async (c) => {
-      await c.query('update meeting_participants set last_session_started_at = null where meeting_id = $1 and user_id = $2', [m.id, me.id]);
-      const { rows } = await c.query(
-        'select 1 from meeting_participants where meeting_id = $1 and last_session_started_at is not null', [m.id]);
-      if (!rows[0]) await flushSegment(c, m.id);
-    });
+    await leaveMeeting(app.db, m.id, me.id);
     return reply.status(204).send();
   });
 
@@ -203,6 +188,7 @@ export async function meetingRoutes(app: FastifyInstance) {
       await c.query("update meetings set status = 'ended', ended_at = now() where id = $1", [m.id]);
       await c.query('update meeting_participants set last_session_started_at = null where meeting_id = $1', [m.id]);
     });
+    app.io.to(`meeting:${m.id}`).emit('meeting:ended', { meetingId: m.id });
     return reply.status(204).send();
   });
 
