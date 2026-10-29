@@ -1,5 +1,6 @@
-import Fastify from 'fastify';
-import { SERVICE_PORTS, type Health } from '@meetpilot/shared';
+import { SERVICE_PORTS } from '@meetpilot/shared';
+import { createPool } from './db/pool.js';
+import { buildApp } from './app.js';
 
 // Fail closed: services must never run without the shared secret (docs/06).
 if (!process.env.INTERNAL_SECRET) {
@@ -7,9 +8,6 @@ if (!process.env.INTERNAL_SECRET) {
   process.exit(1);
 }
 
-const app = Fastify({ logger: true });
-
-app.get('/health', async (): Promise<Health> => ({ service: 'backend', status: 'ok' }));
-
+const app = buildApp(createPool());
 const port = Number(process.env.BACKEND_PORT ?? SERVICE_PORTS.backend);
 await app.listen({ port, host: '0.0.0.0' });

@@ -1,8 +1,5 @@
 import { createRoot } from 'react-dom/client';
+import { App } from './App';
+import './styles.css';
 
-createRoot(document.getElementById('root')!).render(
-  <main style={{ fontFamily: 'system-ui', padding: 32 }}>
-    <h1>MeetPilot</h1>
-    <p>Don't just talk. Execute.</p>
-  </main>,
-);
+createRoot(document.getElementById('root')!).render(<App />);
