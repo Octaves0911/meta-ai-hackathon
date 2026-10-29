@@ -1,6 +1,6 @@
 import { HttpError } from '../errors.js';
 
-const base = () => process.env.CONNECTOR_URL ?? 'http://localhost:6000';
+const base = () => process.env.CONNECTOR_URL ?? 'http://localhost:6100';
 
 /** Call the connector with the shared secret; connector errors are passed through with their status and message. */
 export async function connector<T = unknown>(path: string, init: { method?: string; json?: unknown } = {}): Promise<T> {

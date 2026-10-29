@@ -7,6 +7,11 @@ cd "$ROOT"
 mkdir -p .logs
 
 [ -f .env ] || { cp .env.example .env; echo "created .env from .env.example"; }
+# Token vault key: generate once so the Google connector can encrypt tokens at rest.
+if grep -q '^TOKEN_ENC_KEY=$' .env 2>/dev/null; then
+  sed -i.bak "s|^TOKEN_ENC_KEY=\$|TOKEN_ENC_KEY=$(openssl rand -base64 32)|" .env && rm -f .env.bak
+  echo "generated TOKEN_ENC_KEY in .env"
+fi
 set -a; . ./.env; set +a
 
 if [ "${SKIP_DB:-0}" != "1" ] && command -v docker >/dev/null; then
@@ -36,7 +41,7 @@ wait_health() {
   echo "✗ $1 did not become healthy; see .logs/$1.log"
 }
 wait_health backend   http://localhost:4000/health
-wait_health connector http://localhost:6000/health
+wait_health connector http://localhost:6100/health
 wait_health ai        http://localhost:5001/health
 wait_health web       http://localhost:5173/
 

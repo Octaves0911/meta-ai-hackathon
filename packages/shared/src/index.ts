@@ -35,7 +35,7 @@ export const Events = {
   captionStatus: 'caption:status',
 } as const;
 
-export const SERVICE_PORTS = { web: 5173, backend: 4000, ai: 5001, connector: 6000 } as const;
+export const SERVICE_PORTS = { web: 5173, backend: 4000, ai: 5001, connector: 6100 } as const;
 
 export const Username = z
   .string()
