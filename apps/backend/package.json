@@ -11,7 +11,8 @@
     "db:rollback": "tsx --env-file=../../.env src/db/migrate.ts down",
     "db:reset": "tsx --env-file=../../.env src/db/migrate.ts down all && npm run db:migrate",
     "db:status": "tsx --env-file=../../.env src/db/migrate.ts status",
-    "db:seed": "tsx --env-file=../../.env src/db/seed.ts"
+    "db:seed": "tsx --env-file=../../.env src/db/seed.ts",
+    "smoke:room": "node scripts/smoke-room.mjs"
   },
   "dependencies": {
     "@meetpilot/shared": "*",
@@ -23,6 +24,7 @@
     "@types/node": "^22.7.0",
     "@types/pg": "^8.23.1",
     "tsx": "^4.19.1",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "socket.io-client": "^4.8.1"
   }
 }
