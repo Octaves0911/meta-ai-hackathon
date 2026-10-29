@@ -203,7 +203,8 @@ export class Connector {
     const items: Doc[] = [];
     for (const id of ids.filter((i) => !have.has(i))) { // mail is immutable: fetch only what is new
       const m = parseMessage(await google.gmail.get(token, id));
-      if (m.text) items.push({ externalId: id, title: m.subject, author: m.author, url: `https://mail.google.com/mail/u/0/#all/${id}`, occurredAt: m.date, text: m.text });
+      if (m.text) items.push({ externalId: id, title: m.subject, author: m.author, url: `https://mail.google.com/mail/u/0/#all/${id}`, occurredAt: m.date, text: m.text,
+        meta: { fromEmail: m.fromEmail, messageId: m.messageId, threadId: m.threadId, subject: m.subject } });
     }
     return { items, seen: ids };
   }
@@ -237,11 +238,11 @@ export class Connector {
       for (let j = 0; j < batch.length; j++) {
         const d = batch[j];
         await this.db.query(
-          `insert into external_items(connection_id, project_id, owner_id, provider, external_id, title, author, url, visibility, occurred_at, text, embedding)
-           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::vector)
+          `insert into external_items(connection_id, project_id, owner_id, provider, external_id, title, author, url, visibility, occurred_at, text, embedding, meta)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::vector,$13)
            on conflict (connection_id, external_id) do update set title = excluded.title, author = excluded.author, url = excluded.url,
-             visibility = excluded.visibility, occurred_at = excluded.occurred_at, text = excluded.text, embedding = excluded.embedding`,
-          [c.id, c.project_id, c.user_id, c.provider, d.externalId, d.title, d.author, d.url, c.visibility, d.occurredAt, d.text, toVector(vectors[j])]);
+             visibility = excluded.visibility, occurred_at = excluded.occurred_at, text = excluded.text, embedding = excluded.embedding, meta = excluded.meta`,
+          [c.id, c.project_id, c.user_id, c.provider, d.externalId, d.title, d.author, d.url, c.visibility, d.occurredAt, d.text, toVector(vectors[j]), d.meta ?? {}]);
       }
     }
     await this.db.query('delete from external_items where connection_id = $1 and not (external_id = any($2::text[]))', [c.id, seen]);
@@ -264,4 +265,4 @@ export class Connector {
   }
 }
 
-interface Doc { externalId: string; title: string; author: string | null; url: string | null; occurredAt: Date | null; text: string }
+interface Doc { externalId: string; title: string; author: string | null; url: string | null; occurredAt: Date | null; text: string; meta?: Record<string, string | null> }

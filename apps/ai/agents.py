@@ -43,6 +43,8 @@ class TaskIn(BaseModel):
 class CtxItem(BaseModel):
     label: str = Field(max_length=300)
     text: str = Field(max_length=2000)
+    # mail only: sender address, thread id, RFC Message-ID, subject (used to thread replies; never invented)
+    meta: dict[str, str | None] | None = None
 
 
 class Feedback(BaseModel):
@@ -91,9 +93,12 @@ class _State:
 
 
 def _ctx_block(ctx: list[CtxItem]) -> str:
-    return "\n".join(
-        f'<untrusted_source label="{sanitize_label(c.label)}">{c.text.replace("<", " ").replace(">", " ")}</untrusted_source>' for c in ctx
-    ) or "(no project context found)"
+    def tag(c: CtxItem) -> str:
+        m = c.meta or {}
+        extra = "".join(f' {k}="{sanitize_label(str(m[k]))}"' for k in ("from_email", "thread_id") if m.get(k))
+        return f'<untrusted_source label="{sanitize_label(c.label)}"{extra}>{c.text.replace("<", " ").replace(">", " ")}</untrusted_source>'
+
+    return "\n".join(tag(c) for c in ctx) or "(no project context found)"
 
 
 def _task_block(req: RunRequest) -> str:
@@ -114,6 +119,48 @@ def _task_block(req: RunRequest) -> str:
     return "\n".join(parts)
 
 
+# ---------------------------------------------------------------- email helpers
+_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def _allowed_emails(req: "RunRequest") -> set[str]:
+    """Addresses the agent may use: those in the task itself or in the sources. Everything else is invented and dropped."""
+    found = set(_EMAIL.findall(f"{req.task.title} {req.task.description or ''}"))
+    for c in req.context:
+        found.update(_EMAIL.findall(c.text))
+        if c.meta and c.meta.get("from_email"):
+            found.add(str(c.meta["from_email"]))
+    return {e.lower() for e in found}
+
+
+def _names(req: "RunRequest") -> set[str]:
+    return {w.lower() for w in re.findall(r"\b[A-Z][a-z]{2,}\b", f"{req.task.title} {req.task.description or ''}")} - {"reply", "email", "write", "send", "draft", "follow", "please"}
+
+
+def _thread_source(req: "RunRequest") -> "CtxItem | None":
+    """The mail (from the reviewer's own mailbox) a reply should answer: its sender is named in the task."""
+    names = _names(req)
+    for c in req.context:  # context is ranked, best match first
+        m = c.meta or {}
+        if not m.get("from_email"):
+            continue
+        hay = f"{c.label} {str(m['from_email']).split('@')[0]}".lower()
+        if any(n in hay for n in names):
+            return c
+    return None
+
+
+def _reply_fields(src: "CtxItem | None") -> dict:
+    if not src or not src.meta:
+        return {}
+    subj = (src.meta.get("subject") or "").strip()
+    return {
+        "to": [src.meta["from_email"]] if src.meta.get("from_email") else [],
+        "subject": subj if subj.lower().startswith("re:") else f"Re: {subj}" if subj else None,
+        "thread_id": src.meta.get("thread_id"), "in_reply_to": src.meta.get("message_id"), "references": src.meta.get("message_id"),
+    }
+
+
 # ---------------------------------------------------------------- mock mode
 def _mock_consult_answer(to: str, question: str) -> str:
     return f"[{to}] Key points for “{question[:80]}”: focus on the primary audience, one clear message, and two measurable goals."
@@ -129,11 +176,19 @@ def _mock_run(name: str, req: RunRequest, state: _State) -> RunResponse:
         state.consultations.append(Consultation(from_agent=name, to_agent="marketing", question=q, answer=_mock_consult_answer("marketing", q), depth=1))
     consult_md = "".join(f"\n\n**Input from {c.to_agent}:** {c.answer}" for c in state.consultations)
     if name == "communication":
+        src = _thread_source(req)
+        reply = _reply_fields(src)
+        to = reply.get("to") or []
         body = f"Hi,\n\nFollowing up on: {t.title}.{addressed}\n\nBest regards"
-        arts = [ArtifactOut(type="email_draft", title="Email draft", payload={
-            "to": [], "cc": [], "subject": t.title, "body": body, "missing_recipients": True,
-            "open_questions": ["Who should receive this email?"], "sources": [c.label for c in req.context]})]
-        return RunResponse(summary=f"Drafted an email for “{t.title}”{rev}.", notes="No recipient was mentioned; please add one before sending.", artifacts=arts, consultations=state.consultations)
+        payload = {
+            "to": to, "cc": [], "subject": reply.get("subject") or t.title, "body": body, "missing_recipients": not to,
+            "open_questions": [] if to else ["Who should receive this email?"], "sources": [src.label] if src else [c.label for c in req.context],
+            **{k: v for k, v in reply.items() if k in ("thread_id", "in_reply_to", "references") and v},
+        }
+        arts = [ArtifactOut(type="email_draft", title="Email draft", payload=payload)]
+        return RunResponse(summary=f"Drafted {'a reply' if src else 'an email'} for “{t.title}”{rev}.",
+                           notes="Replying in your existing thread." if src else "No recipient was found in your mailbox; please add one before sending.",
+                           artifacts=arts, consultations=state.consultations)
     md = f"# {name.title()} deliverable: {t.title}{rev}\n\n## Summary\nMock {name} output for the task above.{addressed}{consult_md}\n\n## Sources\n{sources}\n"
     arts = [ArtifactOut(type="markdown", title=f"{name.title()} report" if name != "code" else "Implementation plan", content=md)]
     if name == "designer":
@@ -177,14 +232,20 @@ async def _real_run(name: str, req: RunRequest, state: _State) -> RunResponse:
     if name == "communication":
         data = await complete_json(
             "You draft emails. NEVER invent email addresses: only use addresses present in the task or sources; otherwise leave `to` empty and set "
-            'missing_recipients=true. Return {"to":[],"cc":[],"subject":"","body":"","missing_recipients":bool,"open_questions":[],"summary":""}.',
+            "missing_recipients=true. If you are replying to one of the source emails, set reply_to_source to that source's exact label. "
+            'Return {"to":[],"cc":[],"subject":"","body":"","missing_recipients":bool,"open_questions":[],"summary":"","reply_to_source":null}.',
             f"{task}\n\nProject context:\n{ctx}{consulted}", max_tokens=1500)
-        body = str(data.get("body", ""))[:50000]
-        payload = {"to": [str(x) for x in data.get("to", [])][:10], "cc": [str(x) for x in data.get("cc", [])][:10], "subject": str(data.get("subject", req.task.title))[:300],
-                   "body": body, "missing_recipients": bool(data.get("missing_recipients", not data.get("to"))),
-                   "open_questions": [str(x) for x in data.get("open_questions", [])][:5], "sources": [c.label for c in req.context]}
+        allowed = _allowed_emails(req)
+        keep = lambda xs: [str(x).strip() for x in (xs or []) if str(x).strip().lower() in allowed][:10]  # drop anything not in the sources
+        src = next((c for c in req.context if c.label == data.get("reply_to_source")), None) or _thread_source(req)
+        reply = _reply_fields(src)
+        to = keep(data.get("to")) or [e for e in reply.get("to", []) if e.lower() in allowed]
+        payload = {"to": to, "cc": keep(data.get("cc")), "subject": str(data.get("subject") or reply.get("subject") or req.task.title)[:300],
+                   "body": str(data.get("body", ""))[:50000], "missing_recipients": not to,
+                   "open_questions": [str(x) for x in data.get("open_questions", [])][:5], "sources": [src.label] if src else [c.label for c in req.context],
+                   **{k: v for k, v in reply.items() if k in ("thread_id", "in_reply_to", "references") and v}}
         return RunResponse(summary=str(data.get("summary") or f"Drafted an email for “{req.task.title}”.")[:500],
-                           notes="Check recipients before sending." if payload["missing_recipients"] else "", artifacts=[ArtifactOut(type="email_draft", title="Email draft", payload=payload)], consultations=state.consultations)
+                           notes="Check recipients before sending." if not to else "", artifacts=[ArtifactOut(type="email_draft", title="Email draft", payload=payload)], consultations=state.consultations)
 
     kind = {"research": "a sourced research report", "marketing": "a go-to-market / strategy plan", "designer": "a design brief", "code": "an implementation plan (files, steps, risks, tests)"}[name]
     md = await complete_text(
