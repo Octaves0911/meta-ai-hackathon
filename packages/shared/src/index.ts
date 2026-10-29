@@ -36,3 +36,32 @@ export const Events = {
 } as const;
 
 export const SERVICE_PORTS = { web: 5173, backend: 4000, ai: 5001, connector: 6000 } as const;
+
+export const Username = z
+  .string()
+  .trim()
+  .min(2)
+  .max(32)
+  .regex(/^[a-zA-Z0-9_.-]+$/, 'letters, numbers, _ . - only')
+  .transform((s) => s.toLowerCase());
+
+export const CreateUserBody = z.object({ username: Username });
+export type CreateUserBody = z.infer<typeof CreateUserBody>;
+
+export const CreateProjectBody = z.object({
+  name: z.string().trim().min(1).max(100),
+  description: z.string().trim().max(500).optional(),
+  shareWorkspace: z.boolean().default(false),
+});
+export type CreateProjectBody = z.infer<typeof CreateProjectBody>;
+
+export interface User { id: string; username: string; createdAt: string }
+export interface Project {
+  id: string; name: string; description: string | null; ownerId: string;
+  shareWorkspace: boolean; role: 'owner' | 'member'; createdAt: string;
+}
+export interface ProjectOverview {
+  meetings: number; thisWeek: number; avgDurationSec: number; activeNow: number;
+  byStatus: Record<MeetingStatus, number>;
+  monthly: { month: string; count: number }[];
+}
