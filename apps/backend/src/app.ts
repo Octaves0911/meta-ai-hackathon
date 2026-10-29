@@ -13,6 +13,7 @@ import { attachRealtime } from './realtime.js';
 import { attachStt } from './stt.js';
 import { memoryRoutes } from './routes/memory.js';
 import { insightRoutes } from './routes/insights.js';
+import { taskRoutes } from './routes/tasks.js';
 import { InsightService } from './insights/service.js';
 import { createEmbedder, type Embedder } from './memory/embedder.js';
 
@@ -58,5 +59,6 @@ export function buildApp(db: pg.Pool): FastifyInstance {
   app.register(transcriptRoutes, { prefix: '/api' });
   app.register(memoryRoutes, { prefix: '/api' });
   app.register(insightRoutes, { prefix: '/api' });
+  app.register(taskRoutes, { prefix: '/api' });
   return app;
 }

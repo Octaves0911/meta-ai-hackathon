@@ -85,7 +85,7 @@ def build_router(require_secret) -> APIRouter:
             "deadline set, question raised, blocker or important information shared. Ignore small talk. "
             "For decisions about a recurring fact use a snake_case entity_key (e.g. deployment_date) and put the new value in `value`. "
             "Set references_earlier=true when the speaker refers to an earlier meeting (\"as we discussed\"). "
-            "Keep summaries under 160 characters and quotes under 240. "
+            "For a task put the person responsible in `who` (the speaker if they volunteer) and a short imperative title in `summary` (e.g. \"Send the pricing report\"), with any spoken deadline in `due_text`. Keep summaries under 160 characters and quotes under 240. "
             'Return {"events":[{"type","entity_key","value","summary","who","due_text","references_earlier","quote","from_seq","to_seq"}]}. '
             f"Today is {req.today}."
         )

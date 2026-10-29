@@ -53,6 +53,7 @@ export async function transcriptRoutes(app: FastifyInstance) {
       c.release();
     }
     indexMeetingTranscript(app.db, app.embedder, m.id).catch((e) => app.log.error(e, 'transcript indexing failed'));
+    app.insights.importTasks(m.id).catch((e) => app.log.error(e, 'task extraction from import failed'));
     return reply.status(201).send({ imported: lines.length });
   });
 }

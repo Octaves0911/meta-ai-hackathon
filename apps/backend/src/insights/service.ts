@@ -5,13 +5,15 @@ import { buildContext, type ContextPackage } from '../memory/context.js';
 import { indexRecord } from '../memory/store.js';
 import { searchMemory } from '../memory/search.js';
 import { Governor, PRIORITY } from './governor.js';
-import { insightFromJoined, INSIGHT_COLS, toInsight } from './format.js';
+import { toInsight } from './format.js';
+import { TASK_SELECT, toTask } from './tasksFormat.js';
+import { resolveDue, taskTitle } from '../services/due.js';
 import { createLlmClient, type LlmClient } from './llm.js';
 import { answerRules, extractRules, judgeRules } from './rules.js';
 import type { Candidate, EventDraft, InsightKind, TranscriptLine, Verdict } from './types.js';
 
 type Queued = Verdict & { insightId?: string };
-interface MeetingRow { id: string; project_id: string; owner_id: string }
+interface MeetingRow { id: string; project_id: string; owner_id: string; ai_assist: boolean }
 
 const NO_ANSWER = "I couldn't find anything about that in this project's memory.";
 const isReal = () => (process.env.EMBEDDING_PROVIDER ?? 'fake') === 'real';
@@ -46,7 +48,8 @@ export class InsightService {
 
   // ---- worker -------------------------------------------------------------------------------------------------
   async tick() {
-    const { rows } = await this.db.query<MeetingRow>("select id, project_id, owner_id from meetings where status = 'active' and ai_assist");
+    // Task extraction runs for every active meeting; insights only where AI Assistance is on (F5.1, F7.1).
+    const { rows } = await this.db.query<MeetingRow>("select id, project_id, owner_id, ai_assist from meetings where status = 'active'");
     await Promise.all(rows.map((m) => this.process(m).catch((e) => this.app.log.error(e, 'insight tick failed'))));
   }
 
@@ -57,20 +60,64 @@ export class InsightService {
     try {
       const cursor = this.cursors.get(m.id) ?? 0;
       const { rows } = await this.db.query(
-        'select seq, speaker_name, text, created_at from transcript_segments where meeting_id = $1 and seq > $2 order by seq limit 40', [m.id, cursor]);
+        'select seq, speaker_name, text, user_id, created_at from transcript_segments where meeting_id = $1 and seq > $2 order by seq limit 40', [m.id, cursor]);
       if (rows.length) {
-        const lines: TranscriptLine[] = rows.map((r) => ({ seq: r.seq, speaker: r.speaker_name, text: r.text }));
+        const lines: TranscriptLine[] = rows.map((r) => ({ seq: r.seq, speaker: r.speaker_name, text: r.text, userId: r.user_id }));
         const { rows: earlierRows } = await this.db.query(
           'select seq, speaker_name, text from transcript_segments where meeting_id = $1 and seq <= $2 order by seq desc limit 10', [m.id, cursor]);
         const earlier = earlierRows.reverse().map((r) => ({ seq: r.seq, speaker: r.speaker_name, text: r.text }));
-        const events = (await this.llm.extract(lines, earlier)) ?? extractRules(lines);
-        for (const ev of events) await this.handleEvent(m, ev);
+        await this.handleLines(m, lines, earlier);
         this.cursors.set(m.id, lines[lines.length - 1].seq);
       }
       await this.flushQueue(m.id);
     } finally {
       this.busy.delete(m.id);
     }
+  }
+
+  /** Extract events from lines (LLM, else rules), attach the speaker, and handle each event. */
+  private async handleLines(m: MeetingRow, lines: TranscriptLine[], earlier: TranscriptLine[]) {
+    const events = (await this.llm.extract(lines, earlier)) ?? extractRules(lines);
+    for (const ev of events) {
+      const line = lines.find((l) => l.seq === ev.fromSeq) ?? lines[0];
+      ev.speaker = line?.speaker ?? null;
+      ev.speakerId = line?.userId ?? null;
+      await this.handleEvent(m, ev);
+    }
+  }
+
+  /** Match a spoken name to a meeting participant or project member (case-insensitive username). */
+  private async resolveUser(m: MeetingRow, name: string | null | undefined): Promise<string | null> {
+    if (!name) return null;
+    const { rows } = await this.db.query(
+      `select u.id from users u where lower(u.username) = lower($3) and (
+         exists (select 1 from project_members pm where pm.project_id = $1 and pm.user_id = u.id)
+         or exists (select 1 from meeting_participants p where p.meeting_id = $2 and p.user_id = u.id))`,
+      [m.project_id, m.id, name.trim()]);
+    return rows[0]?.id ?? null;
+  }
+
+  /**
+   * One task per spoken commitment (F7.1/F7.2). "Assigned by" is whoever asked; a volunteer assigns themselves.
+   * Deadlines are resolved against today's date.
+   */
+  private async createTask(m: MeetingRow, ev: EventDraft, eventId: string) {
+    const today = new Date().toISOString().slice(0, 10);
+    const due = resolveDue(ev.dueText, today) ?? resolveDue(ev.quote, today);
+    const assignee = await this.resolveUser(m, ev.who);
+    const assigner = ev.speakerId ?? (await this.resolveUser(m, ev.speaker));
+    const { rows } = await this.db.query(
+      `insert into tasks(meeting_id, project_id, title, description, assigned_to, assigned_by, due_date, event_id)
+       values ($1,$2,$3,$4,$5,$6,$7,$8) on conflict (event_id) where event_id is not null do nothing returning id`,
+      [m.id, m.project_id, taskTitle(ev.summary), ev.quote || ev.summary, assignee, assigner, due, eventId]);
+    if (!rows[0]) return;
+    await this.emitTask(m.id, rows[0].id);
+    await indexRecord(this.db, this.app.embedder, 'task', rows[0].id).catch((e) => this.app.log.error(e));
+  }
+
+  private async emitTask(meetingId: string, taskId: string) {
+    const { rows } = await this.db.query(`${TASK_SELECT} where t.id = $1`, [taskId]);
+    if (rows[0]) this.app.io.to(`meeting:${meetingId}`).emit(Events.taskUpserted, toTask(rows[0]));
   }
 
   private async flushQueue(meetingId: string) {
@@ -128,12 +175,15 @@ export class InsightService {
   }
 
   private async handleEvent(m: MeetingRow, ev: EventDraft) {
+    if (!m.ai_assist && ev.type !== 'task') return; // with AI off only commitments are tracked
     const { rows } = await this.db.query(
       `insert into knowledge_events(meeting_id, project_id, segment_from_seq, segment_to_seq, type, entity_key, summary, who, references_earlier, quote, summary_hash)
        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) on conflict (meeting_id, segment_from_seq, type, summary_hash) do nothing returning id`,
       [m.id, m.project_id, ev.fromSeq, ev.toSeq, ev.type, ev.entityKey, ev.summary, ev.who, ev.referencesEarlier, ev.quote, hash(ev.summary)]);
     if (!rows[0]) return; // already processed (idempotent re-run)
     const eventId = rows[0].id as string;
+    if (ev.type === 'task') await this.createTask(m, ev, eventId);
+    if (!m.ai_assist) return;
 
     const cands = await this.candidatesFor(m, ev);
     // undefined = LLM unavailable -> rules; null = the model decided to stay quiet (must not fall through to rules)
@@ -252,17 +302,47 @@ export class InsightService {
     await this.chatMessage(meetingId, insight.id);
   }
 
-  /** Called when the owner ends the meeting: process what is left, then post the recap (only if AI was on). */
+  /**
+   * Called when the owner ends the meeting: finish extraction, finalize the task list and tell the room (drives the
+   * end-of-meeting overlay, F7.4), then post the recap if AI Assistance was on.
+   */
   async finalize(meetingId: string) {
     const { rows } = await this.db.query('select id, project_id, owner_id, ai_assist from meetings where id = $1', [meetingId]);
-    if (!rows[0]?.ai_assist) return;
-    await this.process(rows[0]).catch((e) => this.app.log.error(e));
-    const g = this.gov(meetingId);
-    // anything still queued never reached the chat: demote to the feed so the recap includes it
-    for (const item of g.queued) if (item.insightId) await this.db.query("update insights set tier = 'feed' where id = $1", [item.insightId]);
-    await this.recap(meetingId);
-    this.governors.delete(meetingId);
-    this.cursors.delete(meetingId);
+    const m = rows[0] as MeetingRow | undefined;
+    if (!m) return;
+    for (let i = 0; i < 50 && this.busy.has(m.id); i++) await new Promise((r) => setTimeout(r, 100)); // let an in-flight pass finish
+    try {
+      await this.process(m);
+    } catch (e) {
+      this.app.log.error(e, 'final extraction failed');
+    }
+    await this.db.query('update tasks set finalized = true where meeting_id = $1', [m.id]);
+    const { rows: tasks } = await this.db.query(`${TASK_SELECT} where t.meeting_id = $1 order by t.created_at, t.id`, [m.id]);
+    this.app.io.to(`meeting:${m.id}`).emit(Events.meetingTasksReady, { meetingId: m.id, tasks: tasks.map(toTask) });
+    if (m.ai_assist) {
+      const g = this.gov(m.id);
+      // anything still queued never reached the chat: demote to the feed so the recap includes it
+      for (const item of g.queued) if (item.insightId) await this.db.query("update insights set tier = 'feed' where id = $1", [item.insightId]);
+      await this.recap(m.id).catch((e) => this.app.log.error(e, 'recap failed'));
+    }
+    this.governors.delete(m.id);
+    this.cursors.delete(m.id);
+  }
+
+  /** Extract tasks from an imported transcript (F7.6). Insights are not generated for imports. */
+  async importTasks(meetingId: string) {
+    const { rows } = await this.db.query('select id, project_id, owner_id, status from meetings where id = $1', [meetingId]);
+    if (!rows[0]) return;
+    const m: MeetingRow = { ...rows[0], ai_assist: false };
+    for (let from = 0; ; ) {
+      const { rows: segs } = await this.db.query(
+        'select seq, speaker_name, text, user_id from transcript_segments where meeting_id = $1 and seq > $2 order by seq limit 40', [m.id, from]);
+      if (!segs.length) break;
+      const lines = segs.map((r) => ({ seq: r.seq, speaker: r.speaker_name, text: r.text, userId: r.user_id }));
+      await this.handleLines(m, lines, []);
+      from = lines[lines.length - 1].seq;
+    }
+    if (rows[0].status === 'ended' || rows[0].status === 'closed') await this.db.query('update tasks set finalized = true where meeting_id = $1', [m.id]);
   }
 
   /** `@ai <question>`: answer from project memory plus the asker's own private sources (F5.8, F9.6). */
