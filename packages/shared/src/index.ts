@@ -65,3 +65,35 @@ export interface ProjectOverview {
   byStatus: Record<MeetingStatus, number>;
   monthly: { month: string; count: number }[];
 }
+
+export const CreateMeetingBody = z.object({
+  title: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(1000).optional(),
+  scheduledAt: z.string().datetime().optional(),
+  inviteeIds: z.array(z.string().uuid()).max(50).default([]),
+  shareChatTranscript: z.boolean().default(false),
+  shareWorkspace: z.boolean().default(false),
+});
+export type CreateMeetingBody = z.infer<typeof CreateMeetingBody>;
+
+export const InviteStatus = z.enum(['invited', 'accepted', 'declined', 'joined']);
+export type InviteStatus = z.infer<typeof InviteStatus>;
+
+export interface Meeting {
+  id: string; projectId: string; ownerId: string; ownerName: string;
+  title: string; description: string | null; status: MeetingStatus;
+  scheduledAt: string | null; startedAt: string | null; endedAt: string | null;
+  totalDurationSec: number; shareChatTranscript: boolean; shareWorkspace: boolean;
+  aiAssist: boolean; createdAt: string;
+}
+export interface MeetingParticipant { userId: string; username: string; inviteStatus: InviteStatus }
+export interface MeetingDetail extends Meeting {
+  projectName: string;
+  participants: MeetingParticipant[];
+  myInviteStatus: InviteStatus | null;
+  stats: { messages: number; notes: number; transcriptSegments: number };
+}
+export interface AppNotification {
+  id: string; type: 'invite' | 'review_ready';
+  payload: Record<string, any>; readAt: string | null; createdAt: string;
+}
