@@ -12,19 +12,22 @@
     "db:reset": "tsx --env-file=../../.env src/db/migrate.ts down all && npm run db:migrate",
     "db:status": "tsx --env-file=../../.env src/db/migrate.ts status",
     "db:seed": "tsx --env-file=../../.env src/db/seed.ts",
-    "smoke:room": "node scripts/smoke-room.mjs"
+    "smoke:room": "node scripts/smoke-room.mjs",
+    "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
     "@meetpilot/shared": "*",
     "fastify": "^5.0.0",
     "pg": "^8.23.1",
-    "socket.io": "^4.8.4"
+    "socket.io": "^4.8.4",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/node": "^22.7.0",
     "@types/pg": "^8.23.1",
+    "@types/ws": "^8.18.2",
+    "socket.io-client": "^4.8.1",
     "tsx": "^4.19.1",
-    "typescript": "^5.6.3",
-    "socket.io-client": "^4.8.1"
+    "typescript": "^5.6.3"
   }
 }
