@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link, Navigate, useParams } from 'react-router-dom';
+import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 import type { MeetingDetail as Detail } from '@meetpilot/shared';
 import { api, useSession } from '../lib/api';
 
@@ -8,6 +8,7 @@ const fmt = (s: string | null) => (s ? new Date(s).toLocaleString() : '—');
 export function MeetingDetail() {
   const { id } = useParams();
   const { user } = useSession();
+  const nav = useNavigate();
   const [m, setM] = useState<Detail | null>(null);
   const [error, setError] = useState('');
 
@@ -41,8 +42,8 @@ export function MeetingDetail() {
           {invited && <><button className="primary" onClick={() => act('respond', { accept: true })}>Accept</button>
             <button onClick={() => act('respond', { accept: false })}>Decline</button></>}
           {!over && !invited && m.myInviteStatus && m.myInviteStatus !== 'declined' && !joined &&
-            <button className="primary" onClick={() => act('join')}>Join</button>}
-          {!over && joined && <button onClick={() => act('leave')}>Leave</button>}
+            <button className="primary" onClick={() => nav(`/room/${m.id}`)}>Join</button>}
+          {!over && joined && <button className="primary" onClick={() => nav(`/room/${m.id}`)}>Return to call</button>}
           {!over && isOwner && m.status === 'active' && <button className="danger" onClick={() => act('end')}>End meeting</button>}
         </div>
       </div>

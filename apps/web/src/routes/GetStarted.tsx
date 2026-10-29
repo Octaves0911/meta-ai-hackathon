@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { User } from '@meetpilot/shared';
-import { api, storeUser, useSession } from '../lib/api';
+import { api, storedUser, storeUser, useSession } from '../lib/api';
 
 export function GetStarted() {
   const [users, setUsers] = useState<User[]>([]);
@@ -62,7 +62,7 @@ export function GetStarted() {
 
 // Deleting acts as the target user (identity is username-only); restore the previous identity afterwards.
 function storeUserSwap(username: string) {
-  const prev = localStorage.getItem('meetpilot.user');
+  const prev = storedUser();
   storeUser(username);
   return () => storeUser(prev);
 }

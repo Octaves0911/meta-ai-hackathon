@@ -6,6 +6,7 @@ import { Landing } from './routes/Landing';
 import { GetStarted } from './routes/GetStarted';
 import { Dashboard } from './routes/Dashboard';
 import { MeetingDetail } from './routes/MeetingDetail';
+import { Room } from './routes/Room';
 
 export function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -35,6 +36,7 @@ export function App() {
           <Route path="/start" element={<GetStarted />} />
           <Route path="/dashboard/:panel?" element={<Dashboard />} />
           <Route path="/meetings/:id" element={<MeetingDetail />} />
+          <Route path="/room/:id" element={<Room />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
