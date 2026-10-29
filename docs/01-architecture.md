@@ -87,7 +87,7 @@ Service-to-service calls carry `x-internal-secret`; backend and connector **fail
 | ORM / migrations | Drizzle ORM + SQL migrations | Typed, explicit SQL |
 | AI service | FastAPI + Pydantic | Structured-output validation of LLM JSON |
 | LLM | Provider-agnostic gateway (default: Claude) | Judge, extractor and agents share one client with retries |
-| Embeddings | 1536-dim, provider-configurable; **fake deterministic embedder when no key** | Tests run offline (see PRD risk table) |
+| Embeddings | 1536-dim; `EMBEDDING_PROVIDER=fake` (default) is a deterministic hashed bag-of-words embedder **inside the backend**; `real` calls the AI service `/embed` (any OpenAI-compatible endpoint) | Tests and demos run offline; fake vectors only capture word overlap, so enable real embeddings before relying on semantic search (see PRD risk table) |
 | Jobs | In-process interval workers + `jobs` table (at-least-once) | No Redis dependency at this scale |
 | Auth | Username only (header `x-user`) – documented limitation | Matches PRD non-goals |
 
