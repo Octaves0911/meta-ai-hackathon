@@ -23,7 +23,7 @@ export async function workspaceRoutes(app: FastifyInstance) {
     const p = await ws().access(uuid(req.params.id), me.id);
     const isOwner = p.owner_id === me.id;
     return {
-      level: isOwner || p.share_workspace ? 'write' : 'read', isOwner, shareWorkspace: p.share_workspace, localRoot: p.local_root,
+      level: p.level, isOwner, shareWorkspace: p.share_workspace, localRoot: p.local_root,
       localEnabled: !!ws().localBase(), localFolders: isOwner ? ws().listLocalFolders() : [], maxUploadMb: Number(process.env.WORKSPACE_MAX_UPLOAD_MB ?? 50),
     };
   });
@@ -97,7 +97,7 @@ export async function workspaceRoutes(app: FastifyInstance) {
       const buf = await part.toBuffer().catch(() => null);
       if (!buf || part.file.truncated) { rejected.push({ name, reason: `larger than ${Number(process.env.WORKSPACE_MAX_UPLOAD_MB ?? 50)} MB` }); continue; }
       try { uploaded.push(toFile(await ws().upload(project, dir ? `${dir}/${name}` : name, buf))); }
-      catch (e) { rejected.push({ name, reason: e instanceof HttpError ? e.message : 'upload failed' }); }
+      catch (e) { if (!(e instanceof HttpError)) app.log.error(e, 'upload failed'); rejected.push({ name, reason: e instanceof HttpError ? e.message : 'upload failed' }); }
     }
     return reply.status(uploaded.length ? 201 : 400).send({ uploaded, rejected });
   });

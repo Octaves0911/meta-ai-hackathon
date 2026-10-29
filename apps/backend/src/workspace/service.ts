@@ -43,7 +43,7 @@ export class WorkspaceService {
    * Owner: read/write. Members: read/write only if the owner shared the workspace. Meeting invitees who are not members:
    * read-only, only when the meeting allows workspace access (F10.4).
    */
-  async access(projectId: string, userId: string, need: Level = 'read'): Promise<ProjectRow> {
+  async access(projectId: string, userId: string, need: Level = 'read'): Promise<ProjectRow & { level: Level }> {
     const { rows } = await this.db.query(
       `select p.id, p.owner_id, p.local_root, p.share_workspace,
               exists(select 1 from project_members m where m.project_id = p.id and m.user_id = $2) as member,
@@ -55,7 +55,7 @@ export class WorkspaceService {
     const level: Level | null = r.owner_id === userId || (r.member && r.share_workspace) ? 'write' : r.invited ? 'read' : null;
     if (!level) throw new HttpError(403, 'workspace_not_shared', 'the owner has not shared this workspace');
     if (need === 'write' && level !== 'write') throw new HttpError(403, 'read_only', 'you have read-only access to this workspace');
-    return r;
+    return { id: r.id, owner_id: r.owner_id, local_root: r.local_root, share_workspace: r.share_workspace, level };
   }
 
   async file(id: string): Promise<FileRow> {
@@ -108,6 +108,7 @@ export class WorkspaceService {
     try { rel = cleanRelPath(rawPath); } catch (e) { throw new HttpError(400, 'invalid_path', (e as Error).message); }
     const { rows: ex } = await this.db.query('select id, kind from workspace_files where project_id = $1 and path = $2', [project.id, rel]);
     if (ex[0]?.kind === 'local') throw new HttpError(409, 'path_exists', 'a file from the connected folder already has this path');
+    await mkdir(this.cloudRoot(project.id), { recursive: true }); // resolveInside needs the root to exist
     const stub = { id: ex[0]?.id ?? '', project_id: project.id, path: rel, kind: 'cloud' } as FileRow;
     const p = this.physical(stub, project);
     await mkdir(dirname(p), { recursive: true });

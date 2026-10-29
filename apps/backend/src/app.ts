@@ -40,6 +40,7 @@ export async function requireUser(app: FastifyInstance, req: FastifyRequest): Pr
 
 export function buildApp(db: pg.Pool): FastifyInstance {
   const app = Fastify({
+    bodyLimit: 2 * 1024 * 1024, // text edits can be up to ~1 MB of content plus JSON escaping
     // Query strings can carry OAuth codes; never write them to logs.
     logger: process.env.NODE_ENV === 'test' ? false : { serializers: { req: (r) => ({ method: r.method, url: r.url?.split('?')[0], hostname: r.hostname }) } },
   });
@@ -51,7 +52,7 @@ export function buildApp(db: pg.Pool): FastifyInstance {
   app.addHook('onClose', async () => app.insights.stop());
   app.decorate('workspace', new WorkspaceService(app));
   app.addHook('onClose', async () => app.workspace.stop());
-  app.register(multipart, { limits: { fileSize: Number(process.env.WORKSPACE_MAX_UPLOAD_MB ?? 50) * 1024 * 1024, files: 50 } });
+  app.register(multipart, { throwFileSizeLimit: false, limits: { fileSize: Number(process.env.WORKSPACE_MAX_UPLOAD_MB ?? 50) * 1024 * 1024, files: 50 } });
   app.decorate('agents', new AgentService(app));
   app.addHook('onClose', async () => app.agents.stop());
 
