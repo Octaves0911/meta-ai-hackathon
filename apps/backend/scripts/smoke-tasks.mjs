@@ -16,7 +16,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const waitFor = async (fn, ms = 6000) => { const t = Date.now(); while (Date.now() - t < ms) { const v = await fn(); if (v) return v; await sleep(150); } return null; };
 
 // dates the way the server resolves them (UTC)
-const today = new Date(); const iso = (d) => d.toISOString().slice(0, 10);
+// "today" in the server's time zone, the same way the server resolves it
+const localToday = new Intl.DateTimeFormat('en-CA', { timeZone: process.env.MEETING_TZ || Intl.DateTimeFormat().resolvedOptions().timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+const today = new Date(`${localToday}T00:00:00Z`); const iso = (d) => d.toISOString().slice(0, 10);
 const addDays = (n) => { const d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + n)); return iso(d); };
 const nextWeekday = (dow) => addDays(((dow - today.getUTCDay() + 7) % 7) || 7);
 const oct31 = (() => { const t = new Date(Date.UTC(today.getUTCFullYear(), 9, 31)); const base = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate())); return iso(t < base ? new Date(Date.UTC(today.getUTCFullYear() + 1, 9, 31)) : t); })();

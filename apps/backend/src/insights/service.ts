@@ -7,7 +7,7 @@ import { searchMemory } from '../memory/search.js';
 import { Governor, PRIORITY } from './governor.js';
 import { toInsight } from './format.js';
 import { TASK_SELECT, toTask } from './tasksFormat.js';
-import { resolveDue, taskTitle } from '../services/due.js';
+import { resolveDue, taskTitle, todayInTz } from '../services/due.js';
 import { createLlmClient, type LlmClient } from './llm.js';
 import { answerRules, extractRules, judgeRules } from './rules.js';
 import type { Candidate, EventDraft, InsightKind, TranscriptLine, Verdict } from './types.js';
@@ -102,7 +102,7 @@ export class InsightService {
    * Deadlines are resolved against today's date.
    */
   private async createTask(m: MeetingRow, ev: EventDraft, eventId: string) {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayInTz();
     const due = resolveDue(ev.dueText, today) ?? resolveDue(ev.quote, today);
     const assignee = await this.resolveUser(m, ev.who);
     const assigner = ev.speakerId ?? (await this.resolveUser(m, ev.speaker));

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveDue, taskTitle } from '../src/services/due.js';
+import { resolveDue, taskTitle, todayInTz } from '../src/services/due.js';
 
 // 2026-10-30 is a Friday.
 const TODAY = '2026-10-30';
@@ -43,4 +43,10 @@ test('taskTitle strips commitment phrasing and trailing deadlines', () => {
   assert.equal(taskTitle('I will fix the bug next week.'), 'Fix the bug');
   assert.equal(taskTitle('Prepare release checklist'), 'Prepare release checklist');
   assert.equal(taskTitle('x'.repeat(300)).length, 100);
+});
+
+test('todayInTz uses the requested time zone, not UTC', () => {
+  const t = new Date('2026-10-29T20:30:00Z'); // still Thursday in UTC, already Friday in India
+  assert.equal(todayInTz(t, 'UTC'), '2026-10-29');
+  assert.equal(todayInTz(t, 'Asia/Kolkata'), '2026-10-30');
 });
