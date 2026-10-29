@@ -20,6 +20,11 @@ def require_secret(x_internal_secret: str | None = Header(default=None)) -> None
         raise HTTPException(status_code=401, detail="invalid internal secret")
 
 
+from insights import build_router  # noqa: E402  (needs require_secret defined above)
+
+app.include_router(build_router(require_secret))
+
+
 @app.get("/health")
 def health() -> dict:
     return {"service": "ai", "status": "ok"}
