@@ -28,7 +28,7 @@ run() { local name=$1; shift; "$@" >".logs/$name.log" 2>&1 & PIDS+=($!); }
 
 run backend   npm run dev -w @meetpilot/backend
 run connector npm run dev -w @meetpilot/connector
-(cd apps/ai && exec .venv/bin/uvicorn main:app --host 0.0.0.0 --port 5000) >.logs/ai.log 2>&1 & PIDS+=($!)
+(cd apps/ai && exec .venv/bin/uvicorn main:app --host 0.0.0.0 --port 5001) >.logs/ai.log 2>&1 & PIDS+=($!)
 run web       npm run dev -w @meetpilot/web
 
 wait_health() {
@@ -37,7 +37,7 @@ wait_health() {
 }
 wait_health backend   http://localhost:4000/health
 wait_health connector http://localhost:6000/health
-wait_health ai        http://localhost:5000/health
+wait_health ai        http://localhost:5001/health
 wait_health web       http://localhost:5173/
 
 echo "All services up. Logs in .logs/. Ctrl-C to stop."
