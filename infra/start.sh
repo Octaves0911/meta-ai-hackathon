@@ -28,11 +28,11 @@ run() { local name=$1; shift; "$@" >".logs/$name.log" 2>&1 & PIDS+=($!); }
 
 run backend   npm run dev -w @meetpilot/backend
 run connector npm run dev -w @meetpilot/connector
-(cd apps/ai && exec .venv/bin/uvicorn main:app --port 5000) >.logs/ai.log 2>&1 & PIDS+=($!)
+(cd apps/ai && exec .venv/bin/uvicorn main:app --host 0.0.0.0 --port 5000) >.logs/ai.log 2>&1 & PIDS+=($!)
 run web       npm run dev -w @meetpilot/web
 
 wait_health() {
-  for _ in $(seq 1 40); do curl -fs "$2" >/dev/null 2>&1 && { echo "✓ $1 $2"; return; }; sleep 0.5; done
+  for _ in $(seq 1 120); do curl -fs "$2" >/dev/null 2>&1 && { echo "✓ $1 $2"; return; }; sleep 0.5; done
   echo "✗ $1 did not become healthy; see .logs/$1.log"
 }
 wait_health backend   http://localhost:4000/health
