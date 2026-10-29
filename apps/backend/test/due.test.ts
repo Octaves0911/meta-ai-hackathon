@@ -39,6 +39,8 @@ test('taskTitle strips commitment phrasing and trailing deadlines', () => {
   assert.equal(taskTitle('I will send the report by Friday.'), 'Send the report');
   assert.equal(taskTitle('Aman will update the pricing page before October 31'), 'Update the pricing page');
   assert.equal(taskTitle('Can you draft the launch email?'), 'Draft the launch email');
+  assert.equal(taskTitle('Can you draft the launch email tomorrow?'), 'Draft the launch email');
+  assert.equal(taskTitle('I will fix the bug next week.'), 'Fix the bug');
   assert.equal(taskTitle('Prepare release checklist'), 'Prepare release checklist');
   assert.equal(taskTitle('x'.repeat(300)).length, 100);
 });

@@ -50,7 +50,8 @@ export function taskTitle(summary: string): string {
     .replace(/^(?:ok(?:ay)?,?\s*|so,?\s*|and\s+)/i, '')
     .replace(/^(?:i(?:'ll| will)|[A-Z][a-z]+ will|(?:can|could) you|please)\s+/i, '')
     .replace(/\s+(?:by|before|on|until)\s+(?:end of (?:the )?(?:week|month)|next (?:week|month)|today|tomorrow|(?:mon|tues|wednes|thurs|fri|satur|sun)day|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?).*$/i, '')
-    .replace(/[.?!\s]+$/, '');
+    .replace(/[.?!\s]+$/, '')
+    .replace(/\s+(?:today|tomorrow|next (?:week|month)|this (?:week|month)|end of (?:the )?(?:week|month))$/i, ''); // bare trailing deadline
   s = s.charAt(0).toUpperCase() + s.slice(1);
   return s.length > 100 ? `${s.slice(0, 99)}…` : s || summary.slice(0, 100);
 }
