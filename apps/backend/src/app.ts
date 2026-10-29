@@ -17,11 +17,14 @@ import { taskRoutes } from './routes/tasks.js';
 import { executionRoutes } from './routes/executions.js';
 import { integrationRoutes } from './routes/integrations.js';
 import { AgentService } from './agents/service.js';
+import { WorkspaceService } from './workspace/service.js';
+import { workspaceRoutes } from './routes/workspace.js';
+import multipart from '@fastify/multipart';
 import { InsightService } from './insights/service.js';
 import { createEmbedder, type Embedder } from './memory/embedder.js';
 
 declare module 'fastify' {
-  interface FastifyInstance { db: pg.Pool; embedder: Embedder; insights: InsightService; agents: AgentService }
+  interface FastifyInstance { db: pg.Pool; embedder: Embedder; insights: InsightService; agents: AgentService; workspace: WorkspaceService }
 }
 
 export interface AuthUser { id: string; username: string }
@@ -46,6 +49,9 @@ export function buildApp(db: pg.Pool): FastifyInstance {
   attachStt(app);
   app.decorate('insights', new InsightService(app));
   app.addHook('onClose', async () => app.insights.stop());
+  app.decorate('workspace', new WorkspaceService(app));
+  app.addHook('onClose', async () => app.workspace.stop());
+  app.register(multipart, { limits: { fileSize: Number(process.env.WORKSPACE_MAX_UPLOAD_MB ?? 50) * 1024 * 1024, files: 50 } });
   app.decorate('agents', new AgentService(app));
   app.addHook('onClose', async () => app.agents.stop());
 
@@ -69,6 +75,7 @@ export function buildApp(db: pg.Pool): FastifyInstance {
   app.register(insightRoutes, { prefix: '/api' });
   app.register(taskRoutes, { prefix: '/api' });
   app.register(executionRoutes, { prefix: '/api' });
+  app.register(workspaceRoutes, { prefix: '/api' });
   app.register(integrationRoutes, { prefix: '/api' });
   return app;
 }
