@@ -127,3 +127,19 @@ export interface Insight {
 }
 export const FeedbackBody = z.object({ value: z.enum(['helpful', 'dismissed']) });
 export const AiAssistBody = z.object({ enabled: z.boolean() });
+
+export const TaskStatus = z.enum(['open', 'in_progress', 'review', 'done']);
+export type TaskStatus = z.infer<typeof TaskStatus>;
+export interface TaskUser { id: string; username: string }
+export interface Task {
+  id: string; meetingId: string; title: string; description: string | null;
+  assignedTo: TaskUser | null; assignedBy: TaskUser | null;
+  dueDate: string | null; status: TaskStatus; finalized: boolean; createdAt: string;
+}
+export const UpdateTaskBody = z.object({
+  title: z.string().trim().min(1).max(200).optional(),
+  description: z.string().max(2000).nullable().optional(),
+  assignedTo: z.string().uuid().nullable().optional(),
+  dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  status: TaskStatus.optional(),
+});

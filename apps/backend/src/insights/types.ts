@@ -2,7 +2,7 @@ export type InsightKind = 'conflict' | 'answer' | 'reminder' | 'context' | 'no_r
 export type Tier = 'interrupt' | 'queued' | 'feed';
 export type EventType = 'task' | 'decision' | 'deadline' | 'question' | 'blocker' | 'info';
 
-export interface TranscriptLine { seq: number; speaker: string; text: string }
+export interface TranscriptLine { seq: number; speaker: string; text: string; userId?: string | null }
 
 /** A structured fact extracted from speech (docs/04 §1). */
 export interface EventDraft {
@@ -16,6 +16,8 @@ export interface EventDraft {
   quote: string;
   fromSeq: number;
   toSeq: number;
+  speaker?: string | null;       // who said it (filled in by the pipeline from the transcript line)
+  speakerId?: string | null;
 }
 
 /** Something retrieved from memory that the judge may turn into an insight. */

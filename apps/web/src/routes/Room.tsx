@@ -12,6 +12,9 @@ import { ChatPanel } from '../components/ChatPanel';
 import { NotesPanel } from '../components/NotesPanel';
 import { AiNotesPanel } from '../components/AiNotesPanel';
 import { useAiNotes } from '../hooks/useAiNotes';
+import { useTasks } from '../hooks/useTasks';
+import { TasksPanel } from '../components/TasksPanel';
+import { EndOverlay } from '../components/EndOverlay';
 
 const TABS = ['Chat', 'Notes', 'Tasks', 'AI'] as const;
 
@@ -44,6 +47,7 @@ export function Room() {
   // Captions start automatically on joining; no button (F4.1).
   const capStatus = useCaptionStream({ meetingId: id, username: user?.username ?? '', stream: mesh.local, muted: !mesh.micOn, enabled: ready && !!user && !mesh.ended });
   const caps = useCaptionFeed(id, user?.username ?? '');
+  const tasks = useTasks(id, user?.username ?? '', ready && !!user);
   const ai = useAiNotes(id, user?.username ?? '', ready && !!user, tab === 'AI');
   // The AI switch is shared by everyone in the call; changes arrive live.
   useEffect(() => {
@@ -83,12 +87,7 @@ export function Room() {
 
   const problem = error || mesh.joinError;
   if (problem) return <div className="center"><div className="card"><p role="alert">{problem}</p><Link to={`/meetings/${id}`}>Back to meeting</Link></div></div>;
-  if (mesh.ended) return (
-    <div className="center"><div className="card" role="dialog" aria-modal="true" aria-label="Meeting ended">
-      <h2>Meeting ended</h2><p className="muted">The owner ended this meeting.</p>
-      <button className="primary" onClick={() => nav(`/meetings/${id}`)}>Done</button>
-    </div></div>
-  );
+  if (mesh.ended) return <EndOverlay tasks={tasks.finalTasks} fetchAll={tasks.fetchAll} onDone={() => nav(`/meetings/${id}`)} />;
 
   const [main, ...extra] = mesh.peers;
   const isOwner = meeting?.ownerId === user.id;
@@ -129,7 +128,7 @@ export function Room() {
         <div role="tablist" className="tabs">
           {TABS.map((t) => (
             <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>
-              {t}{t === 'AI' && ai.unread > 0 && <span className="badge-count" aria-label={`${ai.unread} unread`}>{ai.unread}</span>}
+              {t}{t === 'Tasks' && tasks.counts.total > 0 && <span className="badge-count neutral">{tasks.counts.total}</span>}{t === 'AI' && ai.unread > 0 && <span className="badge-count" aria-label={`${ai.unread} unread`}>{ai.unread}</span>}
             </button>
           ))}
         </div>
@@ -137,7 +136,8 @@ export function Room() {
         {ready && tab === 'Chat' && <ChatPanel meetingId={id} />}
         {ready && tab === 'Notes' && <NotesPanel meetingId={id} />}
         {tab === 'AI' && <AiNotesPanel notes={ai.notes} hasMore={ai.hasMore} loadOlder={ai.loadOlder} aiOn={aiOn} error={ai.error} />}
-        {tab === 'Tasks' && <p className="muted" style={{ padding: 16 }}>Available in a later release.</p>}
+        {ready && tab === 'Tasks' && <TasksPanel tasks={tasks.tasks} counts={tasks.counts} filter={tasks.filter} setFilter={tasks.setFilter}
+          hasMore={tasks.hasMore} loadMore={tasks.loadMore} error={tasks.error} />}
       </aside>
     </div>
   );

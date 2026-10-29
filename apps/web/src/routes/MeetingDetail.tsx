@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
-import type { MeetingDetail as Detail } from '@meetpilot/shared';
+import type { MeetingDetail as Detail, Task } from '@meetpilot/shared';
+import { TaskTable } from '../components/TaskTable';
 import { api, useSession } from '../lib/api';
 
 const fmt = (s: string | null) => (s ? new Date(s).toLocaleString() : '—');
@@ -11,9 +12,13 @@ export function MeetingDetail() {
   const nav = useNavigate();
   const [m, setM] = useState<Detail | null>(null);
   const [error, setError] = useState('');
+  const [tasks, setTasks] = useState<Task[]>([]);
 
   const load = useCallback(() => api<Detail>(`/meetings/${id}`).then(setM).catch((e) => setError(e.message)), [id]);
   useEffect(() => { if (user) load(); }, [user, load]);
+  useEffect(() => {
+    if (user) api<{ tasks: Task[] }>(`/meetings/${id}/tasks?limit=100`).then((r) => setTasks(r.tasks.slice().reverse())).catch(() => {});
+  }, [user, id]);
   if (!user) return <Navigate to="/start" replace />;
 
   const act = async (path: string, json?: unknown) => {
@@ -61,6 +66,10 @@ export function MeetingDetail() {
       <div className="card">
         <h3>Timeline</h3>
         <p className="muted">Scheduled: {fmt(m.scheduledAt)} · Created: {fmt(m.createdAt)} · Started: {fmt(m.startedAt)} · Ended: {fmt(m.endedAt)}</p>
+      </div>
+      <div className="card" style={{ marginTop: 16 }}>
+        <h3>Tasks</h3>
+        <TaskTable tasks={tasks} />
       </div>
       <div className="card" style={{ marginTop: 16 }}>
         <h3>Participants</h3>
