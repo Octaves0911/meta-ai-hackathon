@@ -43,16 +43,17 @@ test('OAuth state is signed, tamper-proof and expires', () => {
 
 const b64 = (s: string) => Buffer.from(s).toString('base64url');
 test('Gmail parsing: headers, text part, quoted replies removed', () => {
-  const m = parseMessage({ internalDate: '1700000000000', payload: { headers: [
-    { name: 'From', value: '"Alice Ng" <alice@example.com>' }, { name: 'Subject', value: 'Re: Q3 budget' }, { name: 'Date', value: 'Tue, 14 Nov 2023 10:00:00 +0000' }],
+  const m = parseMessage({ internalDate: '1700000000000', threadId: 'T1', payload: { headers: [
+    { name: 'Message-ID', value: '<abc@mail.example.com>' }, { name: 'From', value: '"Alice Ng" <alice@example.com>' }, { name: 'Subject', value: 'Re: Q3 budget' }, { name: 'Date', value: 'Tue, 14 Nov 2023 10:00:00 +0000' }],
     parts: [{ mimeType: 'text/plain', body: { data: b64('Budget is 40k.\n\nOn Mon, Nov 13, Bob wrote:\n> what is the budget?\n') } }] } });
+  assert.equal(m.fromEmail, 'alice@example.com'); assert.equal(m.threadId, 'T1'); assert.equal(m.messageId, '<abc@mail.example.com>');
   assert.equal(m.author, 'Alice Ng'); assert.equal(m.subject, 'Re: Q3 budget'); assert.equal(m.text, 'Budget is 40k.'); assert.equal(m.date?.getUTCFullYear(), 2023);
 });
 
 test('Gmail parsing: html fallback, nested parts, missing headers', () => {
   const m = parseMessage({ snippet: 'snip', payload: { headers: [{ name: 'From', value: 'bob@example.com' }], parts: [{ mimeType: 'multipart/alternative', parts: [
     { mimeType: 'text/html', body: { data: b64('<div>Hello&nbsp;<b>team</b></div><script>evil()</script><p>Ship it &amp; relax</p>') } }] }] } });
-  assert.equal(m.subject, '(no subject)'); assert.equal(m.author, 'bob@example.com');
+  assert.equal(m.subject, '(no subject)'); assert.equal(m.author, 'bob@example.com'); assert.equal(m.fromEmail, 'bob@example.com'); assert.equal(m.threadId, null);
   assert.match(m.text, /Hello team/); assert.match(m.text, /Ship it & relax/); assert.ok(!m.text.includes('evil'));
 });
 

@@ -160,16 +160,21 @@ export interface Consultation { id: string; fromAgent: string; toAgent: string; 
 export interface ExecutionReview { revision: number; verdict: 'approve' | 'changes'; comment: string | null; lineComments: unknown[] | null; reviewer: string | null; createdAt: string }
 export interface ExecutionDetail extends ExecutionSummary {
   task: Task; notes: string | null; artifacts: ExecutionArtifact[]; consultations: Consultation[]; reviews: ExecutionReview[]; canReview: boolean;
+  /** Email-drafting runs only: whether the reviewer allowed sending via Gmail, and every send made from this run (audit). */
+  send: { granted: boolean | null; account: string | null; sent: { sentAt: string; from: string | null; to: string[]; cc: string[]; subject: string; messageId: string | null }[] } | null;
 }
 export const ReviewBody = z.object({
   verdict: z.enum(['approve', 'changes']),
   comment: z.string().trim().max(4000).optional(),
   lineComments: z.array(z.object({ file: z.string().max(300).optional(), line: z.number().int().min(0).optional(), text: z.string().trim().min(1).max(2000) })).max(50).optional(),
 });
+const noBreaks = (s: string) => !/[\r\n\0]/.test(s);
+export const MAX_RECIPIENTS = 10; // to + cc together
 export const EmailDraftBody = z.object({
-  to: z.array(z.string().email()).max(10), cc: z.array(z.string().email()).max(10),
-  subject: z.string().max(300), body: z.string().max(50000),
-});
+  to: z.array(z.string().email()).max(MAX_RECIPIENTS), cc: z.array(z.string().email()).max(MAX_RECIPIENTS),
+  subject: z.string().max(300).refine(noBreaks, 'subject must be a single line'), body: z.string().max(50000),
+}).refine((d) => d.to.length + d.cc.length <= MAX_RECIPIENTS, { message: `at most ${MAX_RECIPIENTS} recipients in total`, path: ['to'] });
+export const SendEmailBody = z.object({ artifactId: z.string().uuid(), confirm: z.literal(true, { errorMap: () => ({ message: 'sending needs explicit confirmation' }) }) });
 
 export interface ConnectionView {
   id: string; provider: 'gmail' | 'drive'; visibility: 'private' | 'project'; status: 'needs_setup' | 'connected' | 'syncing' | 'error' | string;

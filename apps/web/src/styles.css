@@ -158,3 +158,5 @@ button.mini[aria-pressed="true"] { background: var(--accent); color: #fff; borde
 .settings legend { padding: 0 6px; color: var(--muted); font-size: 14px; }
 .label-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 4px 12px; }
 input[type="range"] { padding: 0; }
+
+.mail-preview { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px; white-space: pre-wrap; max-height: 40vh; overflow: auto; font-family: inherit; }

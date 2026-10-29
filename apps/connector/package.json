@@ -8,7 +8,8 @@
     "start": "tsx src/index.ts",
     "typecheck": "tsc -p . --noEmit",
     "test": "tsx --test test/*.test.ts",
-    "smoke:connector": "node --env-file=../../.env scripts/smoke-connector.mjs"
+    "smoke:connector": "node --env-file=../../.env scripts/smoke-connector.mjs",
+    "smoke:send": "node --env-file=../../.env scripts/smoke-send.mjs"
   },
   "dependencies": {
     "@meetpilot/shared": "*",

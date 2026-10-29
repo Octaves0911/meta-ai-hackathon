@@ -1,5 +1,5 @@
 // Turn a Gmail API message resource into plain, de-quoted text. Pure and unit-tested.
-export interface ParsedMail { subject: string; author: string; date: Date | null; text: string }
+export interface ParsedMail { subject: string; author: string; date: Date | null; text: string; fromEmail: string | null; messageId: string | null; threadId: string | null }
 export const MAX_TEXT = 4000;
 
 const b64 = (s: string) => Buffer.from(s, 'base64url').toString('utf8');
@@ -35,5 +35,7 @@ export function parseMessage(msg: any): ParsedMail {
   const from = header(h, 'from');
   const author = (/^\s*"?([^"<]+?)"?\s*</.exec(from)?.[1] ?? from.replace(/[<>]/g, '')).trim();
   const date = header(h, 'date') ? new Date(header(h, 'date')) : msg.internalDate ? new Date(Number(msg.internalDate)) : null;
-  return { subject: header(h, 'subject') || '(no subject)', author, date: date && !Number.isNaN(date.getTime()) ? date : null, text: stripQuoted(raw || msg.snippet || '').slice(0, MAX_TEXT) };
+  const email = /<([^<>\s@]+@[^<>\s@]+)>/.exec(from)?.[1] ?? (/^[^<>\s@]+@[^<>\s@]+$/.test(from.trim()) ? from.trim() : null);
+  const messageId = header(h, 'message-id').trim() || null;
+  return { fromEmail: email, messageId, threadId: typeof msg.threadId === 'string' ? msg.threadId : null, subject: header(h, 'subject') || '(no subject)', author, date: date && !Number.isNaN(date.getTime()) ? date : null, text: stripQuoted(raw || msg.snippet || '').slice(0, MAX_TEXT) };
 }

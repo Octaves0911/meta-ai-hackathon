@@ -4,6 +4,7 @@ import { MAX_REVISIONS, type ExecutionDetail } from '@meetpilot/shared';
 import { api, useSession } from '../lib/api';
 import { getSocket } from '../lib/socket';
 import { ArtifactView } from '../components/viewers/ArtifactView';
+import { SendEmailPanel } from '../components/SendEmailPanel';
 import { STATUS_LABEL } from './Reviews';
 
 const BUSY = new Set(['routed', 'running', 'changes_requested']);
@@ -86,6 +87,8 @@ export function Review() {
           {current && <ArtifactView artifact={current} executionId={d.id} editable={d.canReview} onSaved={load} />}
         </div>
       )}
+
+      <SendEmailPanel d={d} onDone={load} />
 
       {d.reviews.length > 0 && (
         <div className="card" style={{ marginTop: 16 }}>

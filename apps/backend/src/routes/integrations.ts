@@ -4,7 +4,10 @@ import { requireUser } from '../app.js';
 import { HttpError } from '../errors.js';
 import { connector } from '../services/connector.js';
 
-const Start = z.object({ services: z.array(z.enum(['gmail', 'drive'])).min(1).max(2), visibility: z.enum(['private', 'project']).default('private') });
+const Start = z.object({
+  services: z.array(z.enum(['gmail', 'drive'])).min(1).max(2), visibility: z.enum(['private', 'project']).default('private'),
+  sendAccess: z.boolean().optional(), returnTo: z.string().max(200).optional(), // asking to send email is a separate permission
+});
 const Update = z.object({
   visibility: z.enum(['private', 'project']).optional(), confirmShare: z.boolean().optional(),
   labels: z.array(z.string().max(200)).max(50).optional(), lookbackDays: z.number().int().min(7).max(365).optional(),
@@ -40,8 +43,8 @@ export async function integrationRoutes(app: FastifyInstance) {
     const { code, state, error } = req.query;
     if (error || !code || !state) return reply.redirect(web('/dashboard/integrations?error=cancelled'));
     try {
-      await connector('/oauth/complete', { method: 'POST', json: { code, state } });
-      return reply.redirect(web('/dashboard/integrations?connected=1'));
+      const done = await connector<{ returnTo?: string }>('/oauth/complete', { method: 'POST', json: { code, state } });
+      return reply.redirect(web(done.returnTo ?? '/dashboard/integrations?connected=1'));
     } catch (e) {
       return reply.redirect(web(`/dashboard/integrations?error=${encodeURIComponent(e instanceof HttpError ? e.code : 'failed')}`));
     }

@@ -5,7 +5,7 @@ import type { SourceType } from './store.js';
 export interface MemoryHit {
   id: string; sourceType: SourceType | 'external'; sourceId: string | null; meetingId: string | null;
   text: string; score: number; createdAt: string;
-  title?: string | null; url?: string | null; author?: string | null; provider?: string | null; ownerId?: string | null; visibility?: string;
+  title?: string | null; url?: string | null; author?: string | null; provider?: string | null; ownerId?: string | null; visibility?: string; meta?: Record<string, string | null>;
 }
 
 export interface SearchArgs {
@@ -39,7 +39,7 @@ export async function searchMemory(db: Pool, embedder: Embedder, a: SearchArgs):
 export async function searchExternal(db: Pool, embedder: Embedder, a: { projectId: string; viewerId: string | null; query: string; k?: number; minScore?: number; onlyPrivate?: boolean }): Promise<MemoryHit[]> {
   const [vec] = await embedder.embed([a.query]);
   const { rows } = await db.query(
-    `select id, owner_id, provider, title, author, url, text, occurred_at, visibility, 1 - (embedding <=> $3::vector) as score
+    `select id, owner_id, provider, title, author, url, text, occurred_at, visibility, meta, 1 - (embedding <=> $3::vector) as score
      from external_items
      where project_id = $1 and embedding is not null
        and ((visibility = 'project' and $5::boolean = false) or (visibility = 'private' and owner_id = $2::uuid))
@@ -48,6 +48,6 @@ export async function searchExternal(db: Pool, embedder: Embedder, a: { projectI
   const min = a.minScore ?? defaultMinScore();
   return rows.filter((r) => r.score >= min).map((r) => ({
     id: r.id, sourceType: 'external' as const, sourceId: null, meetingId: null, text: r.text, score: Number(r.score),
-    createdAt: r.occurred_at, title: r.title, url: r.url, author: r.author, provider: r.provider, ownerId: r.owner_id, visibility: r.visibility,
+    createdAt: r.occurred_at, title: r.title, url: r.url, author: r.author, provider: r.provider, ownerId: r.owner_id, visibility: r.visibility, meta: r.meta,
   }));
 }

@@ -59,7 +59,7 @@ export class AgentService {
     const meetingIds = [...new Set(hits.map((h) => h.meetingId).filter(Boolean))];
     const titles = new Map<string, string>();
     if (meetingIds.length) (await this.db.query('select id, title from meetings where id = any($1::uuid[])', [meetingIds])).rows.forEach((r) => titles.set(r.id, r.title));
-    const context = hits.map((h) => ({ label: h.sourceType === 'external' ? `${h.provider ?? 'Source'} · ${h.title ?? ''}` : h.meetingId ? `Meeting “${titles.get(h.meetingId) ?? ''}” (${h.sourceType})` : `Project ${h.sourceType}`, text: h.text }));
+    const context = hits.map((h) => ({ label: h.sourceType === 'external' ? [h.provider === 'drive' ? 'Drive' : 'Gmail', h.author, h.title].filter(Boolean).join(' · ') : h.meetingId ? `Meeting “${titles.get(h.meetingId) ?? ''}” (${h.sourceType})` : `Project ${h.sourceType}`, text: h.text, meta: h.sourceType === 'external' && h.meta ? { from_email: h.meta.fromEmail ?? null, thread_id: h.meta.threadId ?? null, message_id: h.meta.messageId ?? null, subject: h.meta.subject ?? null } : undefined }));
 
     let feedback: object | undefined;
     if (e.revision > 0) {

@@ -3,6 +3,7 @@ import { createEmbedder, toVector, type Embedder } from '@meetpilot/shared/embed
 import * as google from './google.js';
 import { parseMessage } from './gmailParse.js';
 import { signState, verifyState } from './state.js';
+import { buildRaw, MimeError } from './mime.js';
 import { open, seal, vaultConfigured, type Tokens } from './vault.js';
 
 export class ConnectorError extends Error { constructor(public status: number, public code: string, message: string) { super(message); } }
@@ -37,12 +38,15 @@ export class Connector {
   }
 
   // ---- OAuth --------------------------------------------------------------------------------------------------
-  start(a: { projectId: string; userId: string; services: Provider[]; visibility: 'private' | 'project' }) {
+  start(a: { projectId: string; userId: string; services: Provider[]; visibility: 'private' | 'project'; sendAccess?: boolean; returnTo?: string }) {
     this.ensureReady();
-    return { url: google.authUrl(signState(a), a.services) };
+    // Sending is a separate, explicit permission and only ever applies to Gmail; returnTo must be an in-app path.
+    if (a.sendAccess && (a.services.length !== 1 || a.services[0] !== 'gmail')) throw new ConnectorError(400, 'invalid_request', 'send access applies to Gmail only');
+    if (a.returnTo && !/^\/(?!\/)[\w\-./?=&%]*$/.test(a.returnTo)) throw new ConnectorError(400, 'invalid_request', 'invalid return path');
+    return { url: google.authUrl(signState(a), a.services, !!a.sendAccess) };
   }
 
-  async complete(code: string, stateToken: string): Promise<{ projectId: string; connectionIds: string[] }> {
+  async complete(code: string, stateToken: string): Promise<{ projectId: string; connectionIds: string[]; returnTo?: string }> {
     this.ensureReady();
     const state = verifyState(stateToken);
     if (!state) throw new ConnectorError(400, 'invalid_state', 'the sign-in link expired or is invalid');
@@ -54,13 +58,13 @@ export class Connector {
     const ids: string[] = [];
     for (const provider of state.services) {
       const sealed = seal(tokens);
-      const scopes = [google.SCOPES[provider]];
+      const scopes = state.sendAccess ? [google.SCOPES.gmail, google.SEND_SCOPE] : [google.SCOPES[provider]];
       const { rows: ex } = await this.db.query('select id from connections where project_id = $1 and user_id = $2 and provider = $3', [state.projectId, state.userId, provider]);
       if (ex[0]) {
         await this.db.query(
-          `update connections set visibility = $2, scopes = $3, status = 'needs_setup', token_ciphertext = $4, token_iv = $5, token_tag = $6,
+          `update connections set visibility = $2, scopes = $3, status = case when $8::boolean then status else 'needs_setup' end, token_ciphertext = $4, token_iv = $5, token_tag = $6,
              config = jsonb_set(config, '{account}', to_jsonb($7::text)) - 'lastError' where id = $1`,
-          [ex[0].id, state.visibility, scopes, sealed.ciphertext, sealed.iv, sealed.tag, account]);
+          [ex[0].id, state.sendAccess ? (await this.db.query('select visibility from connections where id = $1', [ex[0].id])).rows[0].visibility : state.visibility, scopes, sealed.ciphertext, sealed.iv, sealed.tag, account, !!state.sendAccess]);
         await this.db.query('update external_items set visibility = $2 where connection_id = $1', [ex[0].id, state.visibility]);
         ids.push(ex[0].id);
       } else {
@@ -71,7 +75,7 @@ export class Connector {
         ids.push(rows[0].id);
       }
     }
-    return { projectId: state.projectId, connectionIds: ids };
+    return { projectId: state.projectId, connectionIds: ids, returnTo: state.returnTo };
   }
 
   // ---- views --------------------------------------------------------------------------------------------------
@@ -203,7 +207,8 @@ export class Connector {
     const items: Doc[] = [];
     for (const id of ids.filter((i) => !have.has(i))) { // mail is immutable: fetch only what is new
       const m = parseMessage(await google.gmail.get(token, id));
-      if (m.text) items.push({ externalId: id, title: m.subject, author: m.author, url: `https://mail.google.com/mail/u/0/#all/${id}`, occurredAt: m.date, text: m.text });
+      if (m.text) items.push({ externalId: id, title: m.subject, author: m.author, url: `https://mail.google.com/mail/u/0/#all/${id}`, occurredAt: m.date, text: m.text,
+        meta: { fromEmail: m.fromEmail, messageId: m.messageId, threadId: m.threadId, subject: m.subject } });
     }
     return { items, seen: ids };
   }
@@ -237,14 +242,40 @@ export class Connector {
       for (let j = 0; j < batch.length; j++) {
         const d = batch[j];
         await this.db.query(
-          `insert into external_items(connection_id, project_id, owner_id, provider, external_id, title, author, url, visibility, occurred_at, text, embedding)
-           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::vector)
+          `insert into external_items(connection_id, project_id, owner_id, provider, external_id, title, author, url, visibility, occurred_at, text, embedding, meta)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::vector,$13)
            on conflict (connection_id, external_id) do update set title = excluded.title, author = excluded.author, url = excluded.url,
-             visibility = excluded.visibility, occurred_at = excluded.occurred_at, text = excluded.text, embedding = excluded.embedding`,
-          [c.id, c.project_id, c.user_id, c.provider, d.externalId, d.title, d.author, d.url, c.visibility, d.occurredAt, d.text, toVector(vectors[j])]);
+             visibility = excluded.visibility, occurred_at = excluded.occurred_at, text = excluded.text, embedding = excluded.embedding, meta = excluded.meta`,
+          [c.id, c.project_id, c.user_id, c.provider, d.externalId, d.title, d.author, d.url, c.visibility, d.occurredAt, d.text, toVector(vectors[j]), d.meta ?? {}]);
       }
     }
     await this.db.query('delete from external_items where connection_id = $1 and not (external_id = any($2::text[]))', [c.id, seen]);
+  }
+
+  // ---- sending -------------------------------------------------------------------------------------------------
+  /** Does this user have a Gmail connection with permission to send? */
+  async sendAccess(projectId: string, userId: string): Promise<{ granted: boolean; account: string | null }> {
+    const { rows } = await this.db.query("select config from connections where project_id = $1 and user_id = $2 and provider = 'gmail' and $3 = any(scopes) and token_ciphertext is not null", [projectId, userId, google.SEND_SCOPE]);
+    return { granted: !!rows[0], account: rows[0]?.config?.account ?? null };
+  }
+
+  /** Send one approved email as the user. The caller (backend) has already checked approval, confirmation and duplicates. */
+  async sendMail(a: { projectId: string; userId: string; to: string[]; cc?: string[]; subject: string; body: string; threadId?: string | null; inReplyTo?: string | null; references?: string | null }) {
+    this.ensureReady();
+    const { rows } = await this.db.query("select * from connections where project_id = $1 and user_id = $2 and provider = 'gmail' and $3 = any(scopes) and token_ciphertext is not null", [a.projectId, a.userId, google.SEND_SCOPE]);
+    const c = rows[0];
+    if (!c) throw new ConnectorError(409, 'send_permission_required', 'allow MeetPilot to send email from your Gmail first');
+    let raw: string;
+    try { raw = buildRaw({ from: c.config.account, to: a.to, cc: a.cc, subject: a.subject, body: a.body, inReplyTo: a.inReplyTo, references: a.references }); }
+    catch (e) { if (e instanceof MimeError) throw new ConnectorError(400, 'invalid_email', e.message); throw e; }
+    try {
+      const sent = await google.sendMessage(await this.accessToken(c), raw, a.threadId);
+      return { messageId: sent.id, threadId: sent.threadId ?? a.threadId ?? null, from: c.config.account as string };
+    } catch (e) {
+      if (e instanceof ConnectorError) throw e;
+      if (e instanceof google.GoogleError && (e.status === 401 || e.status === 403)) throw new ConnectorError(409, 'send_permission_required', 'Google refused to send; allow sending again');
+      throw new ConnectorError(502, 'send_failed', 'Gmail could not send the message');
+    }
   }
 
   // ---- deletion -----------------------------------------------------------------------------------------------
@@ -264,4 +295,4 @@ export class Connector {
   }
 }
 
-interface Doc { externalId: string; title: string; author: string | null; url: string | null; occurredAt: Date | null; text: string }
+interface Doc { externalId: string; title: string; author: string | null; url: string | null; occurredAt: Date | null; text: string; meta?: Record<string, string | null> }

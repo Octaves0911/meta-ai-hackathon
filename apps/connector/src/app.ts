@@ -26,8 +26,13 @@ export function buildApp(db: pg.Pool, connector = new Connector(db)) {
 
   app.get('/health', async (): Promise<Health> => ({ service: 'connector', status: 'ok' }));
 
-  app.post('/oauth/start', async (req) => connector.start(z.object({ projectId: uuid, userId: uuid, services: Services, visibility: z.enum(['private', 'project']).default('private') }).parse(req.body)));
+  app.post('/oauth/start', async (req) => connector.start(z.object({ projectId: uuid, userId: uuid, services: Services, visibility: z.enum(['private', 'project']).default('private'), sendAccess: z.boolean().optional(), returnTo: z.string().max(200).optional() }).parse(req.body)));
   app.post('/oauth/complete', async (req) => { const b = z.object({ code: z.string().min(1), state: z.string().min(1) }).parse(req.body); return connector.complete(b.code, b.state); });
+  app.get('/gmail/send-access', async (req) => { const q = z.object({ projectId: uuid, userId: uuid }).parse(req.query); return connector.sendAccess(q.projectId, q.userId); });
+  app.post('/gmail/send', async (req) => connector.sendMail(z.object({
+    projectId: uuid, userId: uuid, to: z.array(z.string().max(320)).max(10), cc: z.array(z.string().max(320)).max(10).optional(),
+    subject: z.string().max(1000), body: z.string().max(200_000), threadId: z.string().max(200).nullish(), inReplyTo: z.string().max(500).nullish(), references: z.string().max(2000).nullish(),
+  }).parse(req.body)));
   app.get('/connections', async (req) => { const q = z.object({ projectId: uuid, userId: uuid }).parse(req.query); return connector.list(q.projectId, q.userId); });
   app.put<{ Params: { id: string } }>('/connections/:id', async (req, reply) => {
     const b = z.object({
