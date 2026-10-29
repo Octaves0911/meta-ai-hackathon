@@ -14,11 +14,13 @@ import { attachStt } from './stt.js';
 import { memoryRoutes } from './routes/memory.js';
 import { insightRoutes } from './routes/insights.js';
 import { taskRoutes } from './routes/tasks.js';
+import { executionRoutes } from './routes/executions.js';
+import { AgentService } from './agents/service.js';
 import { InsightService } from './insights/service.js';
 import { createEmbedder, type Embedder } from './memory/embedder.js';
 
 declare module 'fastify' {
-  interface FastifyInstance { db: pg.Pool; embedder: Embedder; insights: InsightService }
+  interface FastifyInstance { db: pg.Pool; embedder: Embedder; insights: InsightService; agents: AgentService }
 }
 
 export interface AuthUser { id: string; username: string }
@@ -40,6 +42,8 @@ export function buildApp(db: pg.Pool): FastifyInstance {
   attachStt(app);
   app.decorate('insights', new InsightService(app));
   app.addHook('onClose', async () => app.insights.stop());
+  app.decorate('agents', new AgentService(app));
+  app.addHook('onClose', async () => app.agents.stop());
 
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof HttpError) return reply.status(err.status).send({ error: { code: err.code, message: err.message } });
@@ -60,5 +64,6 @@ export function buildApp(db: pg.Pool): FastifyInstance {
   app.register(memoryRoutes, { prefix: '/api' });
   app.register(insightRoutes, { prefix: '/api' });
   app.register(taskRoutes, { prefix: '/api' });
+  app.register(executionRoutes, { prefix: '/api' });
   return app;
 }

@@ -16,7 +16,8 @@
     "test": "tsx --env-file=../../.env --test test/*.test.ts",
     "smoke:captions": "node scripts/smoke-captions.mjs",
     "smoke:insights": "node --env-file=../../.env scripts/smoke-insights.mjs",
-    "smoke:tasks": "node --env-file=../../.env scripts/smoke-tasks.mjs"
+    "smoke:tasks": "node --env-file=../../.env scripts/smoke-tasks.mjs",
+    "smoke:agents": "node --env-file=../../.env scripts/smoke-agents.mjs"
   },
   "dependencies": {
     "@meetpilot/shared": "*",

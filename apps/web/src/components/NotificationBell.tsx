@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import type { AppNotification } from '@meetpilot/shared';
 import { api, useSession } from '../lib/api';
 import { getSocket } from '../lib/socket';
@@ -62,6 +62,11 @@ export function NotificationBell() {
                     </div>
                   )}
                 </>
+              ) : n.type === 'review_ready' ? (
+                <Link to={`/reviews/${n.payload.executionId}`} onClick={() => { void markRead(n); setOpen(false); }} style={{ color: 'var(--text)' }}>
+                  <div>The <strong>{n.payload.agent}</strong> agent finished <strong>{n.payload.taskTitle}</strong></div>
+                  <div className="muted" style={{ fontSize: 13 }}>Ready for your review{n.payload.revision ? ` (revision ${n.payload.revision})` : ''}</div>
+                </Link>
               ) : <div>{n.type}</div>}
             </div>
           ))}

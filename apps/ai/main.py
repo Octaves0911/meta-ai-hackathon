@@ -20,9 +20,11 @@ def require_secret(x_internal_secret: str | None = Header(default=None)) -> None
         raise HTTPException(status_code=401, detail="invalid internal secret")
 
 
-from insights import build_router  # noqa: E402  (needs require_secret defined above)
+from agents import build_router as build_agents_router  # noqa: E402  (need require_secret defined above)
+from insights import build_router  # noqa: E402
 
 app.include_router(build_router(require_secret))
+app.include_router(build_agents_router(require_secret))
 
 
 @app.get("/health")

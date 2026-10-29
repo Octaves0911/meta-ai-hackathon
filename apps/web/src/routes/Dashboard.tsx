@@ -66,7 +66,7 @@ export function Dashboard() {
               {PANELS.map((p) => (
                 <NavLink key={p} to={`/dashboard/${p}`} className={panel === p ? 'active' : ''}>{p[0].toUpperCase() + p.slice(1)}</NavLink>
               ))}
-              <span className="muted" title="Coming soon">Reviews</span>
+              <NavLink to="/reviews">Reviews</NavLink>
             </nav>
             <div className="spacer" />
             <div className="card">

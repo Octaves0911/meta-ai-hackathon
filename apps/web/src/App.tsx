@@ -7,6 +7,8 @@ import { GetStarted } from './routes/GetStarted';
 import { Dashboard } from './routes/Dashboard';
 import { MeetingDetail } from './routes/MeetingDetail';
 import { Room } from './routes/Room';
+import { Reviews } from './routes/Reviews';
+import { Review } from './routes/Review';
 
 export function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -37,6 +39,8 @@ export function App() {
           <Route path="/dashboard/:panel?" element={<Dashboard />} />
           <Route path="/meetings/:id" element={<MeetingDetail />} />
           <Route path="/room/:id" element={<Room />} />
+          <Route path="/reviews" element={<Reviews />} />
+          <Route path="/reviews/:id" element={<Review />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

@@ -319,6 +319,8 @@ export class InsightService {
     await this.db.query('update tasks set finalized = true where meeting_id = $1', [m.id]);
     const { rows: tasks } = await this.db.query(`${TASK_SELECT} where t.meeting_id = $1 order by t.created_at, t.id`, [m.id]);
     this.app.io.to(`meeting:${m.id}`).emit(Events.meetingTasksReady, { meetingId: m.id, tasks: tasks.map(toTask) });
+    // Hand doable tasks to specialist agents; they run in the background and wait for human review (F8.1).
+    await this.app.agents.routeMeeting(m.id).catch((e) => this.app.log.error(e, 'task routing failed'));
     if (m.ai_assist) {
       const g = this.gov(m.id);
       // anything still queued never reached the chat: demote to the feed so the recap includes it
@@ -342,7 +344,10 @@ export class InsightService {
       await this.handleLines(m, lines, []);
       from = lines[lines.length - 1].seq;
     }
-    if (rows[0].status === 'ended' || rows[0].status === 'closed') await this.db.query('update tasks set finalized = true where meeting_id = $1', [m.id]);
+    if (rows[0].status === 'ended' || rows[0].status === 'closed') {
+      await this.db.query('update tasks set finalized = true where meeting_id = $1', [m.id]);
+      await this.app.agents.routeMeeting(m.id).catch((e) => this.app.log.error(e, 'task routing failed'));
+    }
   }
 
   /** `@ai <question>`: answer from project memory plus the asker's own private sources (F5.8, F9.6). */
