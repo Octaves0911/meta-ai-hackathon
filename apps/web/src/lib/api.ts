@@ -3,11 +3,14 @@ import type { User } from '@meetpilot/shared';
 
 const KEY = 'meetpilot.user';
 
+// Per-tab identity (sessionStorage) wins over the browser-wide default (localStorage), so two tabs can be two people.
 export const storedUser = (): string | null => {
-  try { return localStorage.getItem(KEY); } catch { return null; }
+  try { return sessionStorage.getItem(KEY) ?? localStorage.getItem(KEY); } catch { return null; }
 };
 export const storeUser = (name: string | null) => {
-  try { name ? localStorage.setItem(KEY, name) : localStorage.removeItem(KEY); } catch { /* storage unavailable */ }
+  try {
+    for (const store of [sessionStorage, localStorage]) name ? store.setItem(KEY, name) : store.removeItem(KEY);
+  } catch { /* storage unavailable */ }
 };
 
 export async function api<T>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {

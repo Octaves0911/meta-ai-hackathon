@@ -97,3 +97,12 @@ export interface AppNotification {
   id: string; type: 'invite' | 'review_ready';
   payload: Record<string, any>; readAt: string | null; createdAt: string;
 }
+
+export interface ChatMessage {
+  id: string; meetingId: string; userId: string | null; username: string | null;
+  kind: 'user' | 'ai_insight'; body: string; createdAt: string;
+}
+export interface PersonalNote { body: string; updatedAt: string | null }
+export interface RoomPeer { userId: string; socketId: string; name: string }
+export const SendMessageBody = z.object({ body: z.string().trim().min(1).max(4000) });
+export const SaveNoteBody = z.object({ body: z.string().max(20000) });
