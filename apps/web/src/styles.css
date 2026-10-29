@@ -95,3 +95,25 @@ label { display: block; margin: 12px 0 4px; font-size: 14px; color: var(--muted)
 .subtitle-name { color: #ffd84d; }
 .cap-chip { position: absolute; left: 12px; top: 12px; background: rgba(0,0,0,.65); color: #fff; padding: 3px 10px; border-radius: 12px; font-size: 13px; z-index: 3; }
 @media (max-width: 900px) { .subtitles { right: 152px; bottom: 100px; } .subtitle-line { font-size: 15px; } }
+
+/* Assistant cards */
+.insight { background: var(--bg); border: 1px solid var(--border); border-left: 4px solid var(--muted); border-radius: 10px; padding: 8px 10px; align-self: stretch; }
+.insight.kind-conflict { border-left-color: var(--warn); }
+.insight.kind-answer { border-left-color: var(--info); }
+.insight.kind-reminder { border-left-color: var(--accent); }
+.insight.kind-external { border-left-color: var(--info); }
+.insight.dismissed { opacity: .5; }
+.insight-head { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.insight-quote { margin: 6px 0; padding-left: 8px; border-left: 2px solid var(--border); color: var(--muted); font-style: italic; }
+.insight-body { white-space: pre-line; margin-top: 4px; overflow-wrap: anywhere; }
+.insight-source { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.badge { font-size: 11px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 0 6px; }
+.badge-count { margin-left: 6px; background: var(--danger); color: #fff; border-radius: 10px; padding: 0 6px; font-size: 11px; }
+button.mini { min-height: 28px; padding: 2px 8px; font-size: 13px; }
+button.mini[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: var(--accent); }
+.ai-switch { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 14px; }
+.ai-switch input { width: auto; }
+.ai-working { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.spinner { width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
