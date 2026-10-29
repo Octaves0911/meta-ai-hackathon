@@ -32,17 +32,19 @@ export async function searchMemory(db: Pool, embedder: Embedder, a: SearchArgs):
 }
 
 /**
- * Synced mail/Drive snippets. The audience filter lives in the SQL itself: a row is readable only if it is shared with the
+ * Synced mail/Drive snippets. `viewerId: null` returns only project-shared items (what the shared chat may use);
+ * `onlyPrivate` returns only the viewer's own private items. The audience filter lives in the SQL itself: a row is readable only if it is shared with the
  * project or owned by the viewer — never post-filtered in application code (docs/02 §3, F9).
  */
-export async function searchExternal(db: Pool, embedder: Embedder, a: { projectId: string; viewerId: string; query: string; k?: number; minScore?: number }): Promise<MemoryHit[]> {
+export async function searchExternal(db: Pool, embedder: Embedder, a: { projectId: string; viewerId: string | null; query: string; k?: number; minScore?: number; onlyPrivate?: boolean }): Promise<MemoryHit[]> {
   const [vec] = await embedder.embed([a.query]);
   const { rows } = await db.query(
     `select id, owner_id, provider, title, author, url, text, occurred_at, visibility, 1 - (embedding <=> $3::vector) as score
      from external_items
-     where project_id = $1 and embedding is not null and (visibility = 'project' or owner_id = $2)
+     where project_id = $1 and embedding is not null
+       and ((visibility = 'project' and $5::boolean = false) or (visibility = 'private' and owner_id = $2::uuid))
      order by embedding <=> $3::vector limit $4`,
-    [a.projectId, a.viewerId, toVector(vec), a.k ?? 6]);
+    [a.projectId, a.viewerId, toVector(vec), a.k ?? 6, a.onlyPrivate ?? false]);
   const min = a.minScore ?? defaultMinScore();
   return rows.filter((r) => r.score >= min).map((r) => ({
     id: r.id, sourceType: 'external' as const, sourceId: null, meetingId: null, text: r.text, score: Number(r.score),

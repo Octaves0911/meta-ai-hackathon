@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { Events, type Insight } from '@meetpilot/shared';
 import { buildContext, type ContextPackage } from '../memory/context.js';
 import { indexRecord } from '../memory/store.js';
-import { searchMemory } from '../memory/search.js';
+import { searchExternal, searchMemory, type MemoryHit } from '../memory/search.js';
 import { Governor, PRIORITY } from './governor.js';
 import { toInsight } from './format.js';
 import { TASK_SELECT, toTask } from './tasksFormat.js';
@@ -171,7 +171,37 @@ export class InsightService {
       const id = h.sourceId ?? h.id;
       if (!out.has(id)) out.set(id, { id, sourceType: h.sourceType, text: h.text, score: h.score, label: await this.meetingLabel(h.meetingId) });
     }
+    // Project-shared mail/Drive snippets only: anything private must never reach the shared chat.
+    const ext = await searchExternal(this.db, this.app.embedder, { projectId: m.project_id, viewerId: null, query: `${ev.summary} ${ev.quote}`, k: 4 });
+    for (const h of ext) out.set(h.id, this.externalCandidate(h));
     return [...out.values()];
+  }
+
+  private externalCandidate(h: MemoryHit): Candidate {
+    const who = h.provider === 'drive' ? 'Drive' : 'Gmail';
+    return { id: h.id, sourceType: 'external', text: h.text, score: h.score, url: h.url ?? null, private: h.visibility === 'private',
+      label: [who, h.author, h.title].filter(Boolean).join(' · ') };
+  }
+
+  /** Participants currently in the call who own private connected sources in this project. */
+  private async privateOwnersInCall(m: MeetingRow): Promise<string[]> {
+    const { rows } = await this.db.query(
+      `select p.user_id from meeting_participants p where p.meeting_id = $1 and p.last_session_started_at is not null
+         and exists (select 1 from external_items i where i.project_id = $2 and i.visibility = 'private' and i.owner_id = p.user_id)`, [m.id, m.project_id]);
+    return rows.map((r) => r.user_id);
+  }
+
+  /** Insights built from someone's private mail/Drive go only to that person's AI Notes (F5.13, F9.5). */
+  private async deliverPrivate(m: MeetingRow, ev: EventDraft) {
+    for (const userId of await this.privateOwnersInCall(m)) {
+      const hits = await searchExternal(this.db, this.app.embedder, { projectId: m.project_id, viewerId: userId, onlyPrivate: true, query: `${ev.summary} ${ev.quote}`, k: 4 });
+      if (!hits.length) continue;
+      const cands = hits.map((h) => this.externalCandidate(h));
+      const llmVerdict = await this.llm.judge(ev, cands);
+      const v = llmVerdict === undefined ? judgeRules(ev, cands, thresholds()) : llmVerdict;
+      if (!v?.speak || v.kind === 'no_record') continue;
+      await this.deliver(m, { ...v, kind: ['context', 'answer', 'reminder'].includes(v.kind) ? 'external' : v.kind, private: true }, userId);
+    }
   }
 
   private async handleEvent(m: MeetingRow, ev: EventDraft) {
@@ -189,7 +219,8 @@ export class InsightService {
     // undefined = LLM unavailable -> rules; null = the model decided to stay quiet (must not fall through to rules)
     const llmVerdict = await this.llm.judge(ev, cands);
     const verdict = llmVerdict === undefined ? judgeRules(ev, cands, thresholds()) : llmVerdict;
-    if (verdict?.speak) await this.deliver(m, verdict);
+    if (verdict?.speak) await this.deliver(m, verdict, verdict.private ? await this.privateAudience(m) : null);
+    await this.deliverPrivate(m, ev);
 
     // Record the decision after judging so it is compared against *earlier* meetings only.
     if (ev.type === 'decision' && ev.entityKey && ev.value) {
@@ -204,11 +235,11 @@ export class InsightService {
     await indexRecord(this.db, this.app.embedder, 'event', eventId).catch((e) => this.app.log.error(e));
   }
 
-  private async deliver(m: MeetingRow, v: Verdict) {
+  private async deliver(m: MeetingRow, v: Verdict, audience: string | null = null) {
     const g = this.gov(m.id);
     const q: Queued = { ...v };
     const tier = g.route(q);
-    const insight = await this.insertInsight(m, v, tier, v.private ? await this.privateAudience(m) : null);
+    const insight = await this.insertInsight(m, v, tier, v.private ? audience : null);
     q.insightId = insight.id;
     if (tier === 'interrupt') {
       await this.db.query('update insights set delivered_to_chat = true where id = $1', [insight.id]);

@@ -89,6 +89,12 @@ export function judgeRules(ev: EventDraft, cands: Candidate[], t: JudgeThreshold
         topicKey: `task:${task.id}`, evidenceIds: [task.id], private: !!task.private };
     }
   }
+  // Relevant mail/Drive snippet from a connected source (project-shared, or the viewer's own private one).
+  const ext = cands.filter((c) => c.sourceType === 'external').sort((a, b) => b.score - a.score)[0];
+  if (ext && ext.score >= t.answer) {
+    return { speak: true, kind: 'external', score: 0.6, title: 'From your connected sources', message: clip(`${ext.text.replace(/\s+/g, ' ')}`, 240),
+      sourceLabel: ext.label, sourceUrl: ext.url ?? null, topicKey: `external:${ext.id}`, evidenceIds: [ext.id], private: !!ext.private };
+  }
   if (ev.referencesEarlier && !cands.some((c) => c.score >= t.answer)) {
     return { speak: true, kind: 'no_record', score: 0.6, title: 'No record found',
       message: "Someone referred to an earlier agreement, but nothing in this project's memory matches it.",
