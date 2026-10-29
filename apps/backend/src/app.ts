@@ -46,7 +46,7 @@ export function buildApp(db: pg.Pool): FastifyInstance {
     // Accept a caller's x-request-id only if it is a short, harmless token; it is echoed back and forwarded to internal services.
     genReqId: (req) => { const h = req.headers['x-request-id']; return typeof h === 'string' && /^[\w.-]{1,64}$/.test(h) ? h : randomUUID(); },
     // Query strings can carry OAuth codes; never write them to logs.
-    logger: process.env.NODE_ENV === 'test' ? false : { serializers: { req: (r) => ({ method: r.method, url: r.url?.split('?')[0], hostname: r.hostname }) } },
+    logger: process.env.NODE_ENV === 'test' ? false : { level: process.env.LOG_LEVEL ?? 'info', serializers: { req: (r) => ({ method: r.method, url: r.url?.split('?')[0], hostname: r.hostname }) } },
   });
   app.decorate('db', db);
   app.decorate('embedder', createEmbedder());
@@ -65,6 +65,11 @@ export function buildApp(db: pg.Pool): FastifyInstance {
     if (err instanceof HttpError) return reply.status(err.status).send({ error: { code: err.code, message: err.message } });
     if (err instanceof ZodError) {
       return reply.status(400).send({ error: { code: 'invalid_request', message: err.issues.map((i) => i.message).join('; ') } });
+    }
+    // Framework client errors (malformed JSON, body too large, unsupported media type…) keep their 4xx status.
+    const status = (err as { statusCode?: number }).statusCode;
+    if (status && status >= 400 && status < 500) {
+      return reply.status(status).send({ error: { code: String((err as { code?: string }).code ?? 'bad_request').toLowerCase().replace(/^fst_err_/, ''), message: status === 413 ? 'request body is too large' : 'the request could not be processed' } });
     }
     app.log.error(err);
     return reply.status(500).send({ error: { code: 'internal', message: 'internal error' } });

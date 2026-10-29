@@ -11,5 +11,6 @@ Companion to [PRD.md](../PRD.md). The spec is split into focused documents:
 | 05 | [UX design](05-ux-design.md) | layouts, components, tokens, states, a11y |
 | 06 | [Security & privacy](06-security-and-privacy.md) | threats, controls, checklist |
 | 07 | [Build plan](07-build-plan.md) | git workflow, feature branches, testing |
+| 08 | [Operations](08-operations.md) | health, metrics, rate limits, logs, analytics events, process safety |
 
 Key constants: caption fade 8 s · subtitle throttle 220 ms · worker tick 5 s · queue flush ≈8 s · governor 6 cards/30 min, 90 s cooldown (30 s conflicts) · agent revisions ≤3 · consultations ≤4, depth ≤2.
