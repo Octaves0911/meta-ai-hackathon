@@ -11,3 +11,4 @@ if (!process.env.INTERNAL_SECRET) {
 const app = buildApp(createPool());
 const port = Number(process.env.BACKEND_PORT ?? SERVICE_PORTS.backend);
 await app.listen({ port, host: '0.0.0.0' });
+if (process.env.INSIGHTS_ENABLED !== 'false') app.insights.start();
