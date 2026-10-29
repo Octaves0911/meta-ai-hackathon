@@ -58,9 +58,9 @@ export async function projectRoutes(app: FastifyInstance) {
                 count(*) filter (where status = 'active')::int active_now
          from meetings where project_id = $1`),
       q('select status, count(*)::int n from meetings where project_id = $1 group by status'),
-      q(`select to_char(date_trunc('month', g), 'YYYY-MM') month,
+      q(`select to_char(date_trunc('month', g), 'YYYY-MM') as month,
                 (select count(*)::int from meetings where project_id = $1
-                  and date_trunc('month', created_at) = date_trunc('month', g)) count
+                  and date_trunc('month', created_at) = date_trunc('month', g)) as count
          from generate_series(date_trunc('month', now()) - interval '5 months', date_trunc('month', now()), '1 month') g`),
     ]);
     const t = totals.rows[0];
