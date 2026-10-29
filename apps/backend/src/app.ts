@@ -12,10 +12,12 @@ import { transcriptRoutes } from './routes/transcript.js';
 import { attachRealtime } from './realtime.js';
 import { attachStt } from './stt.js';
 import { memoryRoutes } from './routes/memory.js';
+import { insightRoutes } from './routes/insights.js';
+import { InsightService } from './insights/service.js';
 import { createEmbedder, type Embedder } from './memory/embedder.js';
 
 declare module 'fastify' {
-  interface FastifyInstance { db: pg.Pool; embedder: Embedder }
+  interface FastifyInstance { db: pg.Pool; embedder: Embedder; insights: InsightService }
 }
 
 export interface AuthUser { id: string; username: string }
@@ -35,6 +37,8 @@ export function buildApp(db: pg.Pool): FastifyInstance {
   app.decorate('embedder', createEmbedder());
   attachRealtime(app);
   attachStt(app);
+  app.decorate('insights', new InsightService(app));
+  app.addHook('onClose', async () => app.insights.stop());
 
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof HttpError) return reply.status(err.status).send({ error: { code: err.code, message: err.message } });
@@ -53,5 +57,6 @@ export function buildApp(db: pg.Pool): FastifyInstance {
   app.register(roomRoutes, { prefix: '/api' });
   app.register(transcriptRoutes, { prefix: '/api' });
   app.register(memoryRoutes, { prefix: '/api' });
+  app.register(insightRoutes, { prefix: '/api' });
   return app;
 }

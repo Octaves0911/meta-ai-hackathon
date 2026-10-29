@@ -2,11 +2,12 @@ import type { FastifyInstance } from 'fastify';
 import { Events, SaveNoteBody, SendMessageBody, type ChatMessage, type PersonalNote } from '@meetpilot/shared';
 import { requireUser, type AuthUser } from '../app.js';
 import { HttpError } from '../errors.js';
+import { insightFromJoined, INSIGHT_COLS } from '../insights/format.js';
 import { canReadConversation, participation as participationFor } from '../services/access.js';
 
 const toMessage = (r: any): ChatMessage => ({
   id: r.id, meetingId: r.meeting_id, userId: r.user_id, username: r.username ?? null,
-  kind: r.kind, body: r.body, createdAt: r.created_at,
+  kind: r.kind, body: r.body, createdAt: r.created_at, insight: insightFromJoined(r),
 });
 
 export async function roomRoutes(app: FastifyInstance) {
@@ -24,7 +25,8 @@ export async function roomRoutes(app: FastifyInstance) {
     if (before && Number.isNaN(before.getTime())) throw new HttpError(400, 'invalid_request', 'bad before cursor');
     // Newest first; the client reverses for display and pages older with `before`.
     const { rows } = await app.db.query(
-      `select c.*, u.username from chat_messages c left join users u on u.id = c.user_id
+      `select c.*, u.username, ${INSIGHT_COLS} from chat_messages c left join users u on u.id = c.user_id
+       left join insights i on i.id = c.insight_id
        where c.meeting_id = $1 and ($2::timestamptz is null or c.created_at < $2)
        order by c.created_at desc limit $3`,
       [m.id, before, limit],
@@ -41,6 +43,8 @@ export async function roomRoutes(app: FastifyInstance) {
       "insert into chat_messages(meeting_id, user_id, kind, body) values ($1,$2,'user',$3) returning *", [m.id, me.id, body]);
     const msg = toMessage({ ...rows[0], username: me.username });
     app.io.to(`meeting:${m.id}`).emit(Events.chatMessage, msg);
+    // `@ai <question>` is answered asynchronously; the spinner is driven by ai:working events (F5.8).
+    if (/^@ai(\s|$)/i.test(body)) void app.insights.ask(m, me, body);
     return reply.status(201).send(msg);
   });
 

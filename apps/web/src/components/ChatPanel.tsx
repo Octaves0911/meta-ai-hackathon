@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { ChatMessage } from '@meetpilot/shared';
+import type { ChatMessage, Insight } from '@meetpilot/shared';
+import { InsightCard } from './InsightCard';
 import { api, useSession } from '../lib/api';
 import { getSocket } from '../lib/socket';
 
@@ -13,6 +14,7 @@ export function ChatPanel({ meetingId }: { meetingId: string }) {
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState('');
+  const [asking, setAsking] = useState<string[]>([]); // askIds the assistant is still working on
   const box = useRef<HTMLDivElement>(null);
   const stick = useRef(true);                 // follow new messages only while the reader is near the bottom
   const prevHeight = useRef<number | null>(null); // set while prepending older messages to keep scroll position
@@ -36,8 +38,18 @@ export function ChatPanel({ meetingId }: { meetingId: string }) {
     if (!user) return;
     const s = getSocket(user.username);
     const onMsg = (m: ChatMessage) => { if (m.meetingId === meetingId) append(m); };
+    const onWorking = (p: { askId: string; done: boolean }) =>
+      setAsking((l) => (p.done ? l.filter((x) => x !== p.askId) : l.includes(p.askId) ? l : [...l, p.askId]));
+    // The "AI Assistance is off" notice is private to the asker and never stored.
+    const onEphemeral = (p: { ephemeral?: boolean; insight: Insight }) => {
+      if (!p.ephemeral || p.insight.meetingId !== meetingId) return;
+      stick.current = true;
+      append({ id: p.insight.id, meetingId, userId: null, username: null, kind: 'ai_insight', body: p.insight.title, createdAt: p.insight.createdAt, insight: p.insight });
+    };
     s.on('chat:message', onMsg);
-    return () => { s.off('chat:message', onMsg); };
+    s.on('ai:working', onWorking);
+    s.on('insight:new', onEphemeral);
+    return () => { s.off('chat:message', onMsg); s.off('ai:working', onWorking); s.off('insight:new', onEphemeral); };
   }, [user, meetingId, append]);
 
   useLayoutEffect(() => {
@@ -85,16 +97,19 @@ export function ChatPanel({ meetingId }: { meetingId: string }) {
         {loadingOlder && <div className="muted center-text">Loading…</div>}
         {!hasMore && messages.length > 0 && <div className="muted center-text">Start of conversation</div>}
         {messages.length === 0 && <p className="muted">No messages yet.</p>}
-        {messages.map((m) => (
+        {messages.map((m) => m.kind === 'ai_insight' && m.insight ? (
+          <InsightCard key={m.id} insight={m.insight} />
+        ) : (
           <div key={m.id} className={`msg${m.userId === user?.id ? ' mine' : ''}`}>
             <div className="msg-meta">{m.username ?? 'AI'} · {new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
             <div>{m.body}</div>
           </div>
         ))}
+        {asking.length > 0 && <div className="muted ai-working" role="status"><span className="spinner" aria-hidden /> AI is looking through project memory…</div>}
       </div>
       {error && <p className="error" role="alert">{error}</p>}
       <form className="row" onSubmit={send} style={{ padding: 8 }}>
-        <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Message…" aria-label="Message" />
+        <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Message… (@ai to ask the assistant)" aria-label="Message" />
         <button className="primary" disabled={!draft.trim()}>Send</button>
       </form>
     </div>

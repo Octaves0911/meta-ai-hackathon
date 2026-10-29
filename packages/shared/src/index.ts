@@ -101,6 +101,7 @@ export interface AppNotification {
 export interface ChatMessage {
   id: string; meetingId: string; userId: string | null; username: string | null;
   kind: 'user' | 'ai_insight'; body: string; createdAt: string;
+  insight?: Insight | null;            // present on kind 'ai_insight'
 }
 export interface PersonalNote { body: string; updatedAt: string | null }
 export interface RoomPeer { userId: string; socketId: string; name: string }
@@ -114,3 +115,15 @@ export function tailText(text: string, max = 200): string {
   const space = cut.indexOf(' ');
   return '…' + (space >= 0 ? cut.slice(space + 1) : cut);
 }
+
+export interface Insight {
+  id: string; meetingId: string; kind: InsightKind; tier: InsightTier;
+  title: string; body: string; quote: string | null;
+  sourceLabel: string | null; sourceUrl: string | null;
+  score: number | null; topicKey: string | null;
+  private: boolean;                    // true => only visible to its audience user
+  feedback: 'helpful' | 'dismissed' | null;
+  deliveredToChat: boolean; createdAt: string;
+}
+export const FeedbackBody = z.object({ value: z.enum(['helpful', 'dismissed']) });
+export const AiAssistBody = z.object({ enabled: z.boolean() });

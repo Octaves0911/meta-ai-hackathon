@@ -192,6 +192,8 @@ export async function meetingRoutes(app: FastifyInstance) {
     app.io.to(`meeting:${m.id}`).emit('meeting:ended', { meetingId: m.id });
     app.closeCaptions(m.id);
     // Make this meeting's discussion searchable for future meetings; failures must not affect ending the meeting.
+    // Final extraction pass + recap card, then index the transcript so future meetings can find it.
+    app.insights.finalize(m.id).catch((e) => app.log.error(e, 'insight finalize failed'));
     indexMeetingTranscript(app.db, app.embedder, m.id).catch((e) => app.log.error(e, 'transcript indexing failed'));
     return reply.status(204).send();
   });
