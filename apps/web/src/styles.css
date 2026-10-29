@@ -160,3 +160,12 @@ button.mini[aria-pressed="true"] { background: var(--accent); color: #fff; borde
 input[type="range"] { padding: 0; }
 
 .mail-preview { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px; white-space: pre-wrap; max-height: 40vh; overflow: auto; font-family: inherit; }
+
+/* Workspace */
+.ws { display: grid; grid-template-columns: minmax(240px, 320px) 1fr; gap: 16px; align-items: start; margin-top: 12px; }
+.ws-side { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; }
+.tree { max-height: 65vh; overflow: auto; margin-top: 6px; }
+.tree-row { display: block; width: 100%; text-align: left; background: none; border: 0; border-radius: 6px; padding: 4px 8px; min-height: 30px; font-size: 14px; }
+.tree-row:hover { background: var(--bg); } .tree-row.active { background: color-mix(in srgb, var(--accent) 25%, var(--bg)); } .tree-row.target { outline: 1px dashed var(--accent); }
+.editor { width: 100%; min-height: 55vh; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.5; resize: vertical; }
+@media (max-width: 800px) { .ws { grid-template-columns: 1fr; } }
