@@ -28,7 +28,7 @@ flowchart LR
     TASKS[Task + router service]
   end
 
-  subgraph AI["AI service (Python · FastAPI) :5000"]
+  subgraph AI["AI service (Python · FastAPI) :5001"]
     LLM[LLM gateway]
     EMB[Embedding gateway]
     AGENTS[Agent runtime<br/>research·marketing·design·comm·code]
@@ -69,7 +69,7 @@ flowchart LR
 |---|---|---|---|
 | `web` | 5173 | UI, WebRTC, mic capture, captions rendering | none (localStorage: username) |
 | `backend` | 4000 | REST, Socket.IO rooms, STT proxy, insight pipeline, task extraction, router | all relational tables |
-| `ai` | 5000 | Stateless LLM/embedding calls, agent runs, artifact generation | `executions` artifacts (via backend API) |
+| `ai` | 5001 (not 5000: macOS AirPlay uses it) | Stateless LLM/embedding calls, agent runs, artifact generation | `executions` artifacts (via backend API) |
 | `connector` | 6000 | Google OAuth, sync, token vault, send-email | `connections`, `external_items`, encrypted tokens |
 | `postgres` | 5432 | Relational + vector storage | — |
 
