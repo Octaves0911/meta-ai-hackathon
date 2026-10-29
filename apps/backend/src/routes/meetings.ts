@@ -189,6 +189,7 @@ export async function meetingRoutes(app: FastifyInstance) {
       await c.query('update meeting_participants set last_session_started_at = null where meeting_id = $1', [m.id]);
     });
     app.io.to(`meeting:${m.id}`).emit('meeting:ended', { meetingId: m.id });
+    app.closeCaptions(m.id);
     return reply.status(204).send();
   });
 
