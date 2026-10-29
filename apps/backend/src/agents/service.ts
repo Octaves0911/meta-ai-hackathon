@@ -13,7 +13,7 @@ export class AgentService {
 
   constructor(private app: FastifyInstance) {
     this.jobs = new JobRunner(app.db, { 'agent.run': (p) => this.run(p.executionId) }, app.log,
-      (kind, payload, error) => this.fail(payload.executionId, error));
+      (kind, payload, error) => { app.metrics.inc('meetpilot_job_failures_total', 'Jobs that exhausted their retries', { kind }); return this.fail(payload.executionId, error); });
   }
   private get db() { return this.app.db; }
 
@@ -33,6 +33,7 @@ export class AgentService {
         `insert into executions(task_id, agent, status, reviewer_id, route_reason) values ($1,$2,$3,$4,$5)
          on conflict (task_id) do nothing returning id`,
         [t.id, c.agent, c.agent ? 'routed' : 'skipped_human', reviewer, c.reason]);
+      if (rows[0]) this.app.analytics.track('execution_routed', { category: c.category, agent: c.agent ?? 'none' }, { meetingId });
       if (rows[0] && c.agent) await enqueue(this.db, 'agent.run', { executionId: rows[0].id });
     }
   }
@@ -50,6 +51,7 @@ export class AgentService {
     const e = rows[0];
     if (!e || !e.agent) return;
     if (!['routed', 'changes_requested', 'running', 'failed'].includes(e.status)) return; // already handled (at-least-once safety)
+    const t0 = performance.now();
     await this.db.query("update executions set status = 'running', error = null, updated_at = now() where id = $1", [e.id]);
     await this.notifyUpdate(e.id);
 
@@ -97,6 +99,7 @@ export class AgentService {
     } finally {
       c.release();
     }
+    this.app.metrics.observe('meetpilot_agent_run_seconds', 'Agent run duration', (performance.now() - t0) / 1000, { agent: e.agent }, [1, 5, 15, 30, 60, 120, 180]);
     await createNotification(this.app, e.reviewer_id, 'review_ready', { executionId: e.id, taskTitle: e.title, agent: e.agent, revision: e.revision });
     await this.notifyUpdate(e.id);
   }

@@ -39,7 +39,7 @@ export function attachStt(app: FastifyInstance) {
 
     const mode = process.env.STT_MODE ?? 'off';
     const apiKey = process.env.DEEPGRAM_API_KEY;
-    if (mode === 'off' || (mode === 'stream' && !apiKey) || !['stream', 'mock'].includes(mode)) return ws.close(CLOSE_STT_OFF, 'speech disabled');
+    if (mode === 'off' || (mode === 'stream' && !apiKey) || !['stream', 'mock'].includes(mode)) { app.analytics.track('captions_error', { reason: 'disabled' }); return ws.close(CLOSE_STT_OFF, 'speech disabled'); }
 
     const meetingId = url.searchParams.get('meetingId') ?? '';
     const username = (url.searchParams.get('user') ?? '').toLowerCase();
@@ -57,6 +57,7 @@ export function attachStt(app: FastifyInstance) {
 
     const room = `meeting:${meetingId}`;
     const userId = who.id;
+    app.analytics.track('captions_started', {}, { userId: who.id, meetingId });
     const speaker = who.username;
     let chain = Promise.resolve(); // keep persistence + broadcast of finals in order
 
@@ -69,7 +70,10 @@ export function attachStt(app: FastifyInstance) {
           app.io.to(room).emit(Events.captionFinal, { ...base, seq: saved.seq });
         }).catch((e) => app.log.error(e, 'caption persist failed'));
       },
-      onStatus: (state: SttState) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'status', state })); },
+      onStatus: (state: SttState) => {
+        if (state === 'unavailable') app.analytics.track('captions_error', { reason: 'unavailable' }, { userId, meetingId });
+        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'status', state }));
+      },
     };
 
     session = mode === 'mock'

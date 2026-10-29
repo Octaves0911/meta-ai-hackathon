@@ -22,6 +22,8 @@ import { workspaceRoutes } from './routes/workspace.js';
 import multipart from '@fastify/multipart';
 import { InsightService } from './insights/service.js';
 import { createEmbedder, type Embedder } from './memory/embedder.js';
+import { registerOps } from './ops/plugin.js';
+import { randomUUID } from 'node:crypto';
 
 declare module 'fastify' {
   interface FastifyInstance { db: pg.Pool; embedder: Embedder; insights: InsightService; agents: AgentService; workspace: WorkspaceService }
@@ -41,12 +43,15 @@ export async function requireUser(app: FastifyInstance, req: FastifyRequest): Pr
 export function buildApp(db: pg.Pool): FastifyInstance {
   const app = Fastify({
     bodyLimit: 2 * 1024 * 1024, // text edits can be up to ~1 MB of content plus JSON escaping
+    // Accept a caller's x-request-id only if it is a short, harmless token; it is echoed back and forwarded to internal services.
+    genReqId: (req) => { const h = req.headers['x-request-id']; return typeof h === 'string' && /^[\w.-]{1,64}$/.test(h) ? h : randomUUID(); },
     // Query strings can carry OAuth codes; never write them to logs.
     logger: process.env.NODE_ENV === 'test' ? false : { serializers: { req: (r) => ({ method: r.method, url: r.url?.split('?')[0], hostname: r.hostname }) } },
   });
   app.decorate('db', db);
   app.decorate('embedder', createEmbedder());
   attachRealtime(app);
+  registerOps(app);
   attachStt(app);
   app.decorate('insights', new InsightService(app));
   app.addHook('onClose', async () => app.insights.stop());

@@ -43,7 +43,8 @@ export async function integrationRoutes(app: FastifyInstance) {
     const { code, state, error } = req.query;
     if (error || !code || !state) return reply.redirect(web('/dashboard/integrations?error=cancelled'));
     try {
-      const done = await connector<{ returnTo?: string }>('/oauth/complete', { method: 'POST', json: { code, state } });
+      const done = await connector<{ returnTo?: string; projectId: string; userId: string; providers: string[] }>('/oauth/complete', { method: 'POST', json: { code, state } });
+      for (const provider of done.providers) app.analytics.track('integration_connected', { provider }, { userId: done.userId, projectId: done.projectId });
       return reply.redirect(web(done.returnTo ?? '/dashboard/integrations?connected=1'));
     } catch (e) {
       return reply.redirect(web(`/dashboard/integrations?error=${encodeURIComponent(e instanceof HttpError ? e.code : 'failed')}`));

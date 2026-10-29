@@ -97,6 +97,7 @@ export async function executionRoutes(app: FastifyInstance) {
     } finally {
       c.release();
     }
+    app.analytics.track('execution_review', { verdict: body.verdict }, { userId: me.id, projectId: e.project_id, meetingId: e.meeting_id });
     if (body.verdict === 'changes') await app.agents.retry(e.id);
     emitUpdate(e, body.verdict === 'approve' ? 'approved' : 'changes_requested');
     return reply.status(204).send();
@@ -145,6 +146,7 @@ export async function executionRoutes(app: FastifyInstance) {
         projectId: e.project_id, userId: me.id, to: d.to, cc: d.cc, subject: d.subject, body: d.body, threadId: p.thread_id ?? null, inReplyTo: p.in_reply_to ?? null, references: p.references ?? null } });
       await app.db.query('update email_sends set recipients = $2 where id = $1', [claim.rows[0].id, { from: sent.from, to: d.to, cc: d.cc, subject: d.subject, messageId: sent.messageId, threadId: sent.threadId }]);
       emitUpdate(e, 'approved');
+      app.analytics.track('email_sent', {}, { userId: me.id, projectId: e.project_id, meetingId: e.meeting_id });
       return { sentAt: claim.rows[0].sent_at, messageId: sent.messageId, from: sent.from, to: d.to, cc: d.cc };
     } catch (err) {
       // If we could not even tell whether Gmail got the request, keep the claim: a blind retry could send twice.
