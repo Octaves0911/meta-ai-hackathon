@@ -106,3 +106,11 @@ export interface PersonalNote { body: string; updatedAt: string | null }
 export interface RoomPeer { userId: string; socketId: string; name: string }
 export const SendMessageBody = z.object({ body: z.string().trim().min(1).max(4000) });
 export const SaveNoteBody = z.object({ body: z.string().max(20000) });
+
+/** Last ~`max` characters of `text`, cut at a word boundary with a leading "…" (subtitle rule, PRD §7.2). */
+export function tailText(text: string, max = 200): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(text.length - max);
+  const space = cut.indexOf(' ');
+  return '…' + (space >= 0 ? cut.slice(space + 1) : cut);
+}

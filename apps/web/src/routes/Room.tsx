@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 import type { MeetingDetail } from '@meetpilot/shared';
-import { api, useSession } from '../lib/api';
+import { api, storedUser, useSession } from '../lib/api';
 import { getSocket } from '../lib/socket';
 import { usePeerMesh } from '../hooks/usePeerMesh';
+import { useCaptionStream } from '../hooks/useCaptionStream';
+import { useCaptionFeed } from '../hooks/useCaptionFeed';
+import { SubtitleOverlay } from '../components/SubtitleOverlay';
 import { VideoTile } from '../components/VideoTile';
 import { ChatPanel } from '../components/ChatPanel';
 import { NotesPanel } from '../components/NotesPanel';
@@ -34,11 +37,25 @@ export function Room() {
   }, [id, user]);
 
   const mesh = usePeerMesh(id, user?.username ?? '', ready && !!user);
+  // Captions start automatically on joining; no button (F4.1).
+  const capStatus = useCaptionStream({ meetingId: id, username: user?.username ?? '', stream: mesh.local, muted: !mesh.micOn, enabled: ready && !!user && !mesh.ended });
+  const caps = useCaptionFeed(id, user?.username ?? '');
   if (!user) return <Navigate to="/start" replace />;
 
   const leave = () => {
     getSocket(user.username).emit('room:leave', {}, () => nav(`/meetings/${id}`));
     setTimeout(() => nav(`/meetings/${id}`), 500);
+  };
+  const downloadTranscript = async () => {
+    try {
+      const res = await fetch(`/api/meetings/${id}/transcript?format=txt`, { headers: { 'x-user': storedUser() ?? '' } });
+      if (!res.ok) throw new Error((await res.json().catch(() => null))?.error?.message ?? 'download failed');
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(await res.blob());
+      a.download = `${meeting?.title ?? 'meeting'}-transcript.txt`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) { setError((e as Error).message); }
   };
   const end = async () => {
     if (!confirm('End this meeting for everyone?')) return;
@@ -79,7 +96,9 @@ export function Room() {
           </>
         ) : <div className="waiting">Waiting for others…</div>}
         <VideoTile className="self-tile" self stream={mesh.local} name={user.username} />
+        <SubtitleOverlay lines={caps.lines} visible={caps.visible} status={capStatus} />
         <div className="controls">
+          <button onClick={downloadTranscript} aria-label="Download transcript">⤓ Transcript</button>
           <button onClick={mesh.toggleMic} aria-pressed={!mesh.micOn} disabled={!mesh.local?.getAudioTracks().length}>{!mesh.local?.getAudioTracks().length ? '🎤 No microphone' : mesh.micOn ? '🎤 Mute' : '🔇 Unmute'}</button>
           <button onClick={mesh.toggleCam} aria-pressed={!mesh.camOn} disabled={!mesh.local?.getVideoTracks().length}>{!mesh.local?.getVideoTracks().length ? '📷 No camera' : mesh.camOn ? '📷 Camera off' : '📷 Camera on'}</button>
         </div>

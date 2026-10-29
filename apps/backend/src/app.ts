@@ -8,7 +8,9 @@ import { projectRoutes } from './routes/projects.js';
 import { meetingRoutes } from './routes/meetings.js';
 import { notificationRoutes } from './routes/notifications.js';
 import { roomRoutes } from './routes/room.js';
+import { transcriptRoutes } from './routes/transcript.js';
 import { attachRealtime } from './realtime.js';
+import { attachStt } from './stt.js';
 
 declare module 'fastify' {
   interface FastifyInstance { db: pg.Pool }
@@ -29,6 +31,7 @@ export function buildApp(db: pg.Pool): FastifyInstance {
   const app = Fastify({ logger: process.env.NODE_ENV !== 'test' });
   app.decorate('db', db);
   attachRealtime(app);
+  attachStt(app);
 
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof HttpError) return reply.status(err.status).send({ error: { code: err.code, message: err.message } });
@@ -45,5 +48,6 @@ export function buildApp(db: pg.Pool): FastifyInstance {
   app.register(meetingRoutes, { prefix: '/api' });
   app.register(notificationRoutes, { prefix: '/api' });
   app.register(roomRoutes, { prefix: '/api' });
+  app.register(transcriptRoutes, { prefix: '/api' });
   return app;
 }

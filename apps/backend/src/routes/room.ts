@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
-import { z } from 'zod';
 import { Events, SaveNoteBody, SendMessageBody, type ChatMessage, type PersonalNote } from '@meetpilot/shared';
 import { requireUser, type AuthUser } from '../app.js';
 import { HttpError } from '../errors.js';
+import { canReadConversation, participation as participationFor } from '../services/access.js';
 
 const toMessage = (r: any): ChatMessage => ({
   id: r.id, meetingId: r.meeting_id, userId: r.user_id, username: r.username ?? null,
@@ -10,22 +10,13 @@ const toMessage = (r: any): ChatMessage => ({
 });
 
 export async function roomRoutes(app: FastifyInstance) {
-  /** Participant row + meeting, or 404. Outsiders cannot learn that a meeting exists. */
-  async function participation(meetingId: string, me: AuthUser) {
-    if (!z.string().uuid().safeParse(meetingId).success) throw new HttpError(404, 'not_found', 'meeting not found');
-    const { rows } = await app.db.query(
-      `select m.*, p.invite_status, p.last_session_started_at
-       from meetings m join meeting_participants p on p.meeting_id = m.id and p.user_id = $2
-       where m.id = $1`, [meetingId, me.id]);
-    if (!rows[0]) throw new HttpError(404, 'not_found', 'meeting not found');
-    return rows[0];
-  }
+  const participation = (id: string, me: AuthUser) => participationFor(app, id, me);
 
   // Chat is readable by the owner, by anyone when the owner shared it, or by whoever is currently in the call (F2.6).
   app.get<{ Params: { id: string }; Querystring: { before?: string; limit?: string } }>('/meetings/:id/messages', async (req) => {
     const me = await requireUser(app, req);
     const m = await participation(req.params.id, me);
-    if (!(m.owner_id === me.id || m.share_chat_transcript || m.last_session_started_at)) {
+    if (!canReadConversation(m, me)) {
       throw new HttpError(403, 'forbidden', 'chat is not shared for this meeting');
     }
     const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 100);
