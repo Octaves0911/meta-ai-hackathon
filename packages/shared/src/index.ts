@@ -143,3 +143,30 @@ export const UpdateTaskBody = z.object({
   dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   status: TaskStatus.optional(),
 });
+
+export type ExecutionStatus = 'routed' | 'running' | 'awaiting_review' | 'changes_requested' | 'approved' | 'failed' | 'skipped_human';
+export type AgentName = 'research' | 'marketing' | 'designer' | 'communication' | 'code';
+export const MAX_REVISIONS = 3;
+export interface ExecutionSummary {
+  id: string; taskId: string; taskTitle: string; meetingId: string; meetingTitle: string;
+  agent: AgentName | null; status: ExecutionStatus; revision: number; summary: string | null; error: string | null;
+  routeReason: string | null; reviewer: TaskUser | null; assignee: TaskUser | null; dueDate: string | null; updatedAt: string;
+}
+export interface ExecutionArtifact {
+  id: string; type: 'markdown' | 'image' | 'pdf' | 'video' | 'diff' | 'link' | 'file' | 'email_draft';
+  title: string | null; uri: string | null; payload: Record<string, any> | null; revision: number;
+}
+export interface Consultation { id: string; fromAgent: string; toAgent: string; question: string; answer: string | null; depth: number }
+export interface ExecutionReview { revision: number; verdict: 'approve' | 'changes'; comment: string | null; lineComments: unknown[] | null; reviewer: string | null; createdAt: string }
+export interface ExecutionDetail extends ExecutionSummary {
+  task: Task; notes: string | null; artifacts: ExecutionArtifact[]; consultations: Consultation[]; reviews: ExecutionReview[]; canReview: boolean;
+}
+export const ReviewBody = z.object({
+  verdict: z.enum(['approve', 'changes']),
+  comment: z.string().trim().max(4000).optional(),
+  lineComments: z.array(z.object({ file: z.string().max(300).optional(), line: z.number().int().min(0).optional(), text: z.string().trim().min(1).max(2000) })).max(50).optional(),
+});
+export const EmailDraftBody = z.object({
+  to: z.array(z.string().email()).max(10), cc: z.array(z.string().email()).max(10),
+  subject: z.string().max(300), body: z.string().max(50000),
+});
