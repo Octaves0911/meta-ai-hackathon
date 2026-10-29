@@ -170,3 +170,9 @@ export const EmailDraftBody = z.object({
   to: z.array(z.string().email()).max(10), cc: z.array(z.string().email()).max(10),
   subject: z.string().max(300), body: z.string().max(50000),
 });
+
+export interface ConnectionView {
+  id: string; provider: 'gmail' | 'drive'; visibility: 'private' | 'project'; status: 'needs_setup' | 'connected' | 'syncing' | 'error' | string;
+  account: string | null; lastSyncAt: string | null; itemCount: number; ownerId: string; ownerName: string; isOwner: boolean; lastError: string | null;
+  config: { labels: string[]; lookbackDays: number; folderIds: string[]; includeSubfolders: boolean };
+}
