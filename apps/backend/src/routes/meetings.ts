@@ -6,6 +6,7 @@ import { requireUser, type AuthUser } from '../app.js';
 import { HttpError } from '../errors.js';
 import { createNotification } from '../services/notifications.js';
 import { flushSegment, leaveMeeting } from '../services/sessions.js';
+import { indexMeetingTranscript } from '../memory/store.js';
 
 const MEETING_SELECT = `select m.*, u.username as owner_name from meetings m join users u on u.id = m.owner_id`;
 
@@ -190,6 +191,8 @@ export async function meetingRoutes(app: FastifyInstance) {
     });
     app.io.to(`meeting:${m.id}`).emit('meeting:ended', { meetingId: m.id });
     app.closeCaptions(m.id);
+    // Make this meeting's discussion searchable for future meetings; failures must not affect ending the meeting.
+    indexMeetingTranscript(app.db, app.embedder, m.id).catch((e) => app.log.error(e, 'transcript indexing failed'));
     return reply.status(204).send();
   });
 
