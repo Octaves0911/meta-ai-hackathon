@@ -5,6 +5,7 @@ import { api, SessionContext, storedUser, storeUser } from './lib/api';
 import { Landing } from './routes/Landing';
 import { GetStarted } from './routes/GetStarted';
 import { Dashboard } from './routes/Dashboard';
+import { MeetingDetail } from './routes/MeetingDetail';
 
 export function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -33,6 +34,7 @@ export function App() {
           <Route path="/" element={<Landing />} />
           <Route path="/start" element={<GetStarted />} />
           <Route path="/dashboard/:panel?" element={<Dashboard />} />
+          <Route path="/meetings/:id" element={<MeetingDetail />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

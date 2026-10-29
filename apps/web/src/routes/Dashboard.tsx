@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Navigate, NavLink, useNavigate, useParams } from 'react-router-dom';
-import type { Project, ProjectOverview } from '@meetpilot/shared';
+import type { Meeting, Project, ProjectOverview } from '@meetpilot/shared';
 import { api, storeUser, useSession } from '../lib/api';
 import { NewProjectModal } from '../components/NewProjectModal';
+import { NewMeetingModal } from '../components/NewMeetingModal';
+import { NotificationBell } from '../components/NotificationBell';
+import { MeetingsTable } from '../components/MeetingsTable';
 
 const PANELS = ['meetings', 'workspace', 'agents', 'integrations'] as const;
 
@@ -15,6 +18,8 @@ export function Dashboard() {
   const [overview, setOverview] = useState<ProjectOverview | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [showNew, setShowNew] = useState(false);
+  const [showMeeting, setShowMeeting] = useState(false);
+  const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [error, setError] = useState('');
 
   const loadProjects = useCallback(async () => {
@@ -26,10 +31,12 @@ export function Dashboard() {
   }, []);
 
   useEffect(() => { if (user) loadProjects(); }, [user, loadProjects]);
-  useEffect(() => {
-    setOverview(null);
-    if (projectId) api<ProjectOverview>(`/projects/${projectId}/overview`).then(setOverview).catch((e) => setError(e.message));
+  const loadProject = useCallback(() => {
+    if (!projectId) return;
+    api<ProjectOverview>(`/projects/${projectId}/overview`).then(setOverview).catch((e) => setError(e.message));
+    api<Meeting[]>(`/projects/${projectId}/meetings`).then(setMeetings).catch((e) => setError(e.message));
   }, [projectId]);
+  useEffect(() => { setOverview(null); setMeetings([]); loadProject(); }, [loadProject]);
 
   if (!user) return <Navigate to="/start" replace />;
   const project = projects.find((p) => p.id === projectId);
@@ -71,9 +78,9 @@ export function Dashboard() {
       </aside>
       <main className="main">
         <div className="toolbar">
-          <button disabled title="Coming soon" aria-label="Notifications">🔔</button>
+          <NotificationBell />
           <button className="primary" onClick={() => setShowNew(true)}>New project</button>
-          <button disabled title="Coming soon">New meeting</button>
+          <button disabled={!project} onClick={() => setShowMeeting(true)}>New meeting</button>
         </div>
         {error && <p className="error" role="alert">{error}</p>}
         {!project ? (
@@ -85,12 +92,14 @@ export function Dashboard() {
               <div><h1>{project.name}</h1><p className="muted">{project.description}</p></div>
               {project.role === 'owner' && <button className="danger" onClick={deleteProject}>Delete project</button>}
             </div>
-            {panel === 'meetings' ? <Overview o={overview} /> : (
+            {panel === 'meetings' ? <><Overview o={overview} /><h3 style={{ margin: '24px 0 8px' }}>Meetings</h3><MeetingsTable meetings={meetings} /></> : (
               <div className="card"><h3>{panel[0].toUpperCase() + panel.slice(1)}</h3><p className="muted">Coming in a later release.</p></div>
             )}
           </>
         )}
       </main>
+      {showMeeting && project && <NewMeetingModal projectId={project.id} onClose={() => setShowMeeting(false)}
+        onCreated={(m) => { setShowMeeting(false); loadProject(); nav(`/meetings/${m.id}`); }} />}
       {showNew && <NewProjectModal onClose={() => setShowNew(false)}
         onCreated={(p) => { setShowNew(false); setProjects((l) => [p, ...l]); setProjectId(p.id); }} />}
     </div>
