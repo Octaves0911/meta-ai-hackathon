@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { requireUser } from '../app.js';
 import { HttpError } from '../errors.js';
 import { canReadConversation, participation } from '../services/access.js';
+import { indexMeetingTranscript } from '../memory/store.js';
 import { parseTranscript, toSrt, toText, type ExportSegment } from '../services/transcript.js';
 
 const ImportBody = z.object({ text: z.string().min(1).max(500_000), replace: z.boolean().default(false) });
@@ -51,6 +52,7 @@ export async function transcriptRoutes(app: FastifyInstance) {
     } finally {
       c.release();
     }
+    indexMeetingTranscript(app.db, app.embedder, m.id).catch((e) => app.log.error(e, 'transcript indexing failed'));
     return reply.status(201).send({ imported: lines.length });
   });
 }

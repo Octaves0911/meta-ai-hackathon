@@ -11,9 +11,11 @@ import { roomRoutes } from './routes/room.js';
 import { transcriptRoutes } from './routes/transcript.js';
 import { attachRealtime } from './realtime.js';
 import { attachStt } from './stt.js';
+import { memoryRoutes } from './routes/memory.js';
+import { createEmbedder, type Embedder } from './memory/embedder.js';
 
 declare module 'fastify' {
-  interface FastifyInstance { db: pg.Pool }
+  interface FastifyInstance { db: pg.Pool; embedder: Embedder }
 }
 
 export interface AuthUser { id: string; username: string }
@@ -30,6 +32,7 @@ export async function requireUser(app: FastifyInstance, req: FastifyRequest): Pr
 export function buildApp(db: pg.Pool): FastifyInstance {
   const app = Fastify({ logger: process.env.NODE_ENV !== 'test' });
   app.decorate('db', db);
+  app.decorate('embedder', createEmbedder());
   attachRealtime(app);
   attachStt(app);
 
@@ -49,5 +52,6 @@ export function buildApp(db: pg.Pool): FastifyInstance {
   app.register(notificationRoutes, { prefix: '/api' });
   app.register(roomRoutes, { prefix: '/api' });
   app.register(transcriptRoutes, { prefix: '/api' });
+  app.register(memoryRoutes, { prefix: '/api' });
   return app;
 }
