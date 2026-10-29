@@ -16,7 +16,8 @@
   "dependencies": {
     "@meetpilot/shared": "*",
     "fastify": "^5.0.0",
-    "pg": "^8.23.1"
+    "pg": "^8.23.1",
+    "socket.io": "^4.8.4"
   },
   "devDependencies": {
     "@types/node": "^22.7.0",
