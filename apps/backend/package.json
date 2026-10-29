@@ -13,7 +13,7 @@
     "db:status": "tsx --env-file=../../.env src/db/migrate.ts status",
     "db:seed": "tsx --env-file=../../.env src/db/seed.ts",
     "smoke:room": "node scripts/smoke-room.mjs",
-    "test": "tsx --test test/*.test.ts",
+    "test": "tsx --env-file=../../.env --test test/*.test.ts",
     "smoke:captions": "node scripts/smoke-captions.mjs"
   },
   "dependencies": {

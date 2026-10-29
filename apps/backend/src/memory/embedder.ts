@@ -4,11 +4,19 @@ export const EMBEDDING_DIM = 1536;
 
 const STOP = new Set(('a an and are as at be but by for from has have he i in is it its of on or she that the their there they this to was we were what when which who will with you your our us do did does so if then than not no yes can could should would shall may might just also about into over after before').split(' '));
 
-/** Lowercased word tokens without stop-words, with a light plural/"ing"/"ed" stem so "deploying" ~ "deploy". */
+const SUFFIXES = ['ment', 'ing', 'ed', 'es', 's'];
+
+/** Light stemmer so "deployment", "deploying" and "deploy" (and "release"/"releases") share a stem. */
+export function stem(w: string): string {
+  for (const suf of SUFFIXES) {
+    if (w.endsWith(suf) && w.length - suf.length >= 4) { w = w.slice(0, -suf.length); break; }
+  }
+  return w.length > 4 && w.endsWith('e') ? w.slice(0, -1) : w;
+}
+
+/** Lowercased word tokens without stop-words, stemmed. */
 export function tokenize(text: string): string[] {
-  return (text.toLowerCase().match(/[a-z0-9]+/g) ?? [])
-    .filter((w) => w.length > 1 && !STOP.has(w))
-    .map((w) => w.replace(/(ing|ed|es|s)$/, (m, _s, off) => (off >= 3 ? '' : m)));
+  return (text.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter((w) => w.length > 1 && !STOP.has(w)).map(stem);
 }
 
 function fnv(s: string, seed: number): number {
@@ -60,7 +68,7 @@ export function createEmbedder(): Embedder {
   return new FakeEmbedder();
 }
 
-/** Relevance floor before results reach the judge: 0.55 for real embeddings (docs/02 §3); fake vectors score lower. */
-export const defaultMinScore = () => Number(process.env.MEMORY_MIN_SCORE ?? ((process.env.EMBEDDING_PROVIDER ?? 'fake') === 'real' ? 0.55 : 0.2));
+/** Relevance floor before results reach the judge: 0.55 for real embeddings (docs/02 §3); fake bag-of-words vectors score lower, so 0.1. */
+export const defaultMinScore = () => Number(process.env.MEMORY_MIN_SCORE ?? ((process.env.EMBEDDING_PROVIDER ?? 'fake') === 'real' ? 0.55 : 0.1));
 
 export const toVector = (v: number[]) => `[${v.map((x) => +x.toFixed(6)).join(',')}]`;
