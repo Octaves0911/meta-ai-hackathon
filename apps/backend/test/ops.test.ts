@@ -52,3 +52,12 @@ test('analytics keeps only safe, allow-listed properties (no free text)', () => 
   assert.deepEqual(sanitizeProps({ kind: 'has <script>' }), {});
   assert.deepEqual(sanitizeProps(), {});
 });
+
+import { secretProblems } from '../src/startupChecks.js';
+test('production refuses missing, example or short secrets; development only needs one', () => {
+  assert.deepEqual(secretProblems({ INTERNAL_SECRET: '' } as any), ['INTERNAL_SECRET is not set']);
+  assert.deepEqual(secretProblems({ INTERNAL_SECRET: 'dev-only-change-me' } as any), []);
+  assert.equal(secretProblems({ NODE_ENV: 'production', INTERNAL_SECRET: 'dev-only-change-me' } as any).length, 2);
+  assert.equal(secretProblems({ NODE_ENV: 'production', INTERNAL_SECRET: 'short' } as any).length, 1);
+  assert.deepEqual(secretProblems({ NODE_ENV: 'production', INTERNAL_SECRET: 'x'.repeat(32) } as any), []);
+});
