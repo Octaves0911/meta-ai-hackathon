@@ -1,7 +1,7 @@
 // Signed, expiring OAuth `state`: binds the callback to the project, user and choices made when connecting.
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
-export interface OAuthState { projectId: string; userId: string; services: ('gmail' | 'drive')[]; visibility: 'private' | 'project'; exp: number; nonce: string }
+export interface OAuthState { projectId: string; userId: string; services: ('gmail' | 'drive')[]; visibility: 'private' | 'project'; sendAccess?: boolean; returnTo?: string; exp: number; nonce: string }
 const TTL_MS = 10 * 60_000;
 
 const sig = (body: string) => createHmac('sha256', process.env.INTERNAL_SECRET ?? '').update(body).digest('base64url');

@@ -4,13 +4,15 @@ import type { Tokens } from './vault.js';
 const env = (k: string, d: string) => process.env[k] || d;
 const base = () => env('GOOGLE_API_BASE', 'https://www.googleapis.com');
 export const SCOPES = { gmail: 'https://www.googleapis.com/auth/gmail.readonly', drive: 'https://www.googleapis.com/auth/drive.readonly' } as const;
+/** Requested separately, only when the user asks to send an approved email (F9.9). */
+export const SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
 
 export class GoogleError extends Error { constructor(public status: number, message: string, public code?: string) { super(message); } }
 
-export function authUrl(state: string, services: ('gmail' | 'drive')[]): string {
+export function authUrl(state: string, services: ('gmail' | 'drive')[], sendAccess = false): string {
   const q = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID ?? '', redirect_uri: redirectUri(), response_type: 'code', access_type: 'offline', prompt: 'consent',
-    include_granted_scopes: 'false', scope: ['openid', 'email', ...services.map((s) => SCOPES[s])].join(' '), state,
+    include_granted_scopes: 'false', scope: ['openid', 'email', ...services.map((s) => SCOPES[s]), ...(sendAccess ? [SEND_SCOPE] : [])].join(' '), state,
   });
   return `${env('GOOGLE_AUTH_URL', 'https://accounts.google.com/o/oauth2/v2/auth')}?${q}`;
 }
@@ -89,3 +91,12 @@ export const drive = {
     ? get(`/drive/v3/files/${encodeURIComponent(f.id)}/export`, token, { mimeType: 'text/plain' }, true)
     : get(`/drive/v3/files/${encodeURIComponent(f.id)}`, token, { alt: 'media' }, true),
 };
+
+/** POST users/me/messages/send with a base64url RFC 2822 message; optionally into an existing thread. */
+export async function sendMessage(token: string, raw: string, threadId?: string | null): Promise<{ id: string; threadId?: string }> {
+  const res = await fetch(`${base()}/gmail/v1/users/me/messages/send`, {
+    method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ raw, ...(threadId ? { threadId } : {}) }),
+  });
+  if (!res.ok) throw new GoogleError(res.status, 'Gmail send failed');
+  return res.json() as Promise<{ id: string; threadId?: string }>;
+}
