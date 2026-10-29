@@ -9,7 +9,7 @@ import type { FileRow } from '../workspace/service.js';
 import { readFile } from 'node:fs/promises';
 
 const toFile = (r: FileRow): WorkspaceFile => ({
-  id: r.id, path: r.path, kind: r.kind, size: r.size, mime: r.mime, summary: r.summary, updatedAt: r.updated_at,
+  id: r.id, path: r.path, kind: r.kind, size: r.size == null ? null : Number(r.size), mime: r.mime, summary: r.summary, updatedAt: r.updated_at,
   textual: isTextFile(r.path) && (r.size ?? 0) <= MAX_TEXT_BYTES,
 });
 const uuid = (id: string) => { if (!z.string().uuid().safeParse(id).success) throw new HttpError(404, 'not_found', 'not found'); return id; };

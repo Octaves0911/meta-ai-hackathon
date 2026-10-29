@@ -168,6 +168,7 @@ function Viewer({ file, canWrite, onSaved, onDelete }: { file: FileDetail; canWr
   const [dirty, setDirty] = useState(false);
   const [status, setStatus] = useState('');
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [size, setSize] = useState(file.size);
   const isImg = IMG.test(file.path), isPdf = PDF.test(file.path), isText = file.content !== null;
 
   useEffect(() => {
@@ -179,7 +180,7 @@ function Viewer({ file, canWrite, onSaved, onDelete }: { file: FileDetail; canWr
 
   const save = useCallback(async () => {
     setStatus('Saving…');
-    try { await api(`/files/${file.id}`, { method: 'PUT', json: { content: text } }); setDirty(false); setStatus('Saved'); await onSaved(); } catch (e) { setStatus((e as Error).message); }
+    try { const r = await api<WorkspaceFile>(`/files/${file.id}`, { method: 'PUT', json: { content: text } }); setSize(r.size); setDirty(false); setStatus('Saved'); await onSaved(); } catch (e) { setStatus((e as Error).message); }
   }, [file.id, text, onSaved]);
 
   const download = async () => {
@@ -190,14 +191,14 @@ function Viewer({ file, canWrite, onSaved, onDelete }: { file: FileDetail; canWr
   return (
     <div className="card" style={{ display: 'grid', gap: 8 }}>
       <div className="row" style={{ justifyContent: 'space-between' }}>
-        <div><strong>{file.path}</strong> <span className="muted">· {file.size ?? 0} bytes · {file.kind}</span>{file.summary && <div className="muted" style={{ fontSize: 13 }}>{file.summary}</div>}</div>
+        <div><strong>{file.path}</strong> <span className="muted">· {size ?? 0} bytes · {file.kind}</span>{file.summary && <div className="muted" style={{ fontSize: 13 }}>{file.summary}</div>}</div>
         <div className="row">
           {isText && canWrite && <button className="primary" onClick={save} disabled={!dirty}>Save</button>}
           <button onClick={download}>Download</button>
           {canWrite && file.kind === 'cloud' && <button className="danger" onClick={onDelete}>Delete</button>}
         </div>
       </div>
-      {status && <span className="muted" role="status">{status}{dirty && !status.startsWith('Sav') ? '' : ''}</span>}
+      {status && <span className="muted" role="status">{status}</span>}
       {isText && <textarea className="editor" aria-label={`Contents of ${file.path}`} value={text} readOnly={!canWrite} spellCheck={false}
         onChange={(e) => { setText(e.target.value); setDirty(true); setStatus(''); }}
         onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); if (dirty && canWrite) void save(); } }} />}
