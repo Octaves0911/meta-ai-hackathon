@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { CreateProjectBody, type Project, type ProjectOverview } from '@meetpilot/shared';
 import { requireUser } from '../app.js';
 import { HttpError } from '../errors.js';
+import { connector } from '../services/connector.js';
 
 const toProject = (r: any): Project => ({
   id: r.id, name: r.name, description: r.description, ownerId: r.owner_id,
@@ -72,6 +73,8 @@ export async function projectRoutes(app: FastifyInstance) {
   app.delete<{ Params: { id: string } }>('/projects/:id', async (req, reply) => {
     const me = await requireUser(app, req);
     if ((await memberOf(req.params.id, me.id)) !== 'owner') throw new HttpError(403, 'forbidden', 'owner only');
+    // Revoke Google access and delete everything indexed from this project's connections before the project goes (F9.7).
+    await connector(`/projects/${req.params.id}/purge`, { method: 'POST' }).catch((e) => app.log.error(e, 'connector purge failed'));
     await app.db.query('delete from projects where id = $1', [req.params.id]);
     return reply.status(204).send();
   });

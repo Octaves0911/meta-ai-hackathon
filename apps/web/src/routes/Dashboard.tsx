@@ -6,6 +6,7 @@ import { NewProjectModal } from '../components/NewProjectModal';
 import { NewMeetingModal } from '../components/NewMeetingModal';
 import { NotificationBell } from '../components/NotificationBell';
 import { MeetingsTable } from '../components/MeetingsTable';
+import { IntegrationsPanel } from '../components/IntegrationsPanel';
 
 const PANELS = ['meetings', 'workspace', 'agents', 'integrations'] as const;
 
@@ -92,7 +93,7 @@ export function Dashboard() {
               <div><h1>{project.name}</h1><p className="muted">{project.description}</p></div>
               {project.role === 'owner' && <button className="danger" onClick={deleteProject}>Delete project</button>}
             </div>
-            {panel === 'meetings' ? <><Overview o={overview} /><h3 style={{ margin: '24px 0 8px' }}>Meetings</h3><MeetingsTable meetings={meetings} /></> : (
+            {panel === 'meetings' ? <><Overview o={overview} /><h3 style={{ margin: '24px 0 8px' }}>Meetings</h3><MeetingsTable meetings={meetings} /></> : panel === 'integrations' ? <IntegrationsPanel projectId={project.id} /> : (
               <div className="card"><h3>{panel[0].toUpperCase() + panel.slice(1)}</h3><p className="muted">Coming in a later release.</p></div>
             )}
           </>

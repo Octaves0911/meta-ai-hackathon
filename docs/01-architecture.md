@@ -34,7 +34,7 @@ flowchart LR
     AGENTS[Agent runtime<br/>research·marketing·design·comm·code]
   end
 
-  subgraph CONN["Connector service (Node) :6000"]
+  subgraph CONN["Connector service (Node) :6100"]
     OAUTH[Google OAuth]
     SYNC[Gmail/Drive sync workers]
     VAULT[Token vault AES-256-GCM]
@@ -70,7 +70,7 @@ flowchart LR
 | `web` | 5173 | UI, WebRTC, mic capture, captions rendering | none (localStorage: username) |
 | `backend` | 4000 | REST, Socket.IO rooms, STT proxy, insight pipeline, task extraction, router | all relational tables |
 | `ai` | 5001 (not 5000: macOS AirPlay uses it) | Stateless LLM/embedding calls, agent runs, artifact generation | `executions` artifacts (via backend API) |
-| `connector` | 6000 | Google OAuth, sync, token vault, send-email | `connections`, `external_items`, encrypted tokens |
+| `connector` | 6100 (not 6000: fetch blocks it as the X11 port) | Google OAuth, sync, token vault, send-email | `connections`, `external_items`, encrypted tokens |
 | `postgres` | 5432 | Relational + vector storage | — |
 
 Service-to-service calls carry `x-internal-secret`; backend and connector **fail closed** if `INTERNAL_SECRET` is unset.

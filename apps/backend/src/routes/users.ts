@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { CreateUserBody, type User } from '@meetpilot/shared';
 import { requireUser } from '../app.js';
 import { HttpError } from '../errors.js';
+import { connector } from '../services/connector.js';
 
 const toUser = (r: any): User => ({ id: r.id, username: r.username, createdAt: r.created_at });
 
@@ -25,6 +26,10 @@ export async function userRoutes(app: FastifyInstance) {
   app.delete<{ Params: { id: string } }>('/users/:id', async (req, reply) => {
     const me = await requireUser(app, req);
     if (me.id !== req.params.id) throw new HttpError(403, 'forbidden', 'can only delete your own account');
+    // Projects this account owns disappear with it, so their members' connections must be revoked too.
+    const owned = await app.db.query('select id from projects where owner_id = $1', [me.id]);
+    for (const p of owned.rows) await connector(`/projects/${p.id}/purge`, { method: 'POST' }).catch((e) => app.log.error(e, 'connector purge failed'));
+    await connector(`/users/${me.id}/purge`, { method: 'POST' }).catch((e) => app.log.error(e, 'connector purge failed'));
     await app.db.query('delete from users where id = $1', [me.id]);
     return reply.status(204).send();
   });

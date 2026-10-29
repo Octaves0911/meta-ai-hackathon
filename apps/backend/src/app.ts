@@ -15,6 +15,7 @@ import { memoryRoutes } from './routes/memory.js';
 import { insightRoutes } from './routes/insights.js';
 import { taskRoutes } from './routes/tasks.js';
 import { executionRoutes } from './routes/executions.js';
+import { integrationRoutes } from './routes/integrations.js';
 import { AgentService } from './agents/service.js';
 import { InsightService } from './insights/service.js';
 import { createEmbedder, type Embedder } from './memory/embedder.js';
@@ -35,7 +36,10 @@ export async function requireUser(app: FastifyInstance, req: FastifyRequest): Pr
 }
 
 export function buildApp(db: pg.Pool): FastifyInstance {
-  const app = Fastify({ logger: process.env.NODE_ENV !== 'test' });
+  const app = Fastify({
+    // Query strings can carry OAuth codes; never write them to logs.
+    logger: process.env.NODE_ENV === 'test' ? false : { serializers: { req: (r) => ({ method: r.method, url: r.url?.split('?')[0], hostname: r.hostname }) } },
+  });
   app.decorate('db', db);
   app.decorate('embedder', createEmbedder());
   attachRealtime(app);
@@ -65,5 +69,6 @@ export function buildApp(db: pg.Pool): FastifyInstance {
   app.register(insightRoutes, { prefix: '/api' });
   app.register(taskRoutes, { prefix: '/api' });
   app.register(executionRoutes, { prefix: '/api' });
+  app.register(integrationRoutes, { prefix: '/api' });
   return app;
 }
