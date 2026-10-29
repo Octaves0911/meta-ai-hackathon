@@ -1,0 +1,58 @@
+name: CI
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env: { POSTGRES_USER: meetpilot, POSTGRES_PASSWORD: meetpilot, POSTGRES_DB: meetpilot }
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U meetpilot" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://meetpilot:meetpilot@localhost:5432/meetpilot
+      INTERNAL_SECRET: ci-secret-0123456789abcdef0123
+      EMBEDDING_PROVIDER: fake
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: npm ci
+      - name: Typecheck and build
+        run: |
+          npm run typecheck
+          npm run build -w @meetpilot/web
+      - name: Python syntax
+        run: python -m py_compile apps/ai/main.py apps/ai/agents.py apps/ai/insights.py apps/ai/llm.py
+      - name: Migrate (up, down, up)
+        run: |
+          cp .env.example .env
+          npm run db:migrate -w @meetpilot/backend
+          npm run db:reset -w @meetpilot/backend
+      - name: Unit tests
+        run: |
+          npm test -w @meetpilot/backend
+          npm test -w @meetpilot/connector
+      - name: Backend smoke tests (rules fallback, no external services)
+        run: |
+          cd apps/backend
+          RATE_LIMIT_PER_MIN=0 INSIGHTS_LLM=off INSIGHT_TICK_MS=300 AGENTS_ENABLED=false npx tsx src/index.ts > /tmp/backend.log 2>&1 &
+          until curl -sf localhost:4000/health > /dev/null; do sleep 1; done
+          npm run smoke:room && npm run smoke:insights && npm run smoke:tasks
+          pkill -f "src/index.ts" || true
+      - name: Hardening smoke (low rate limit)
+        run: |
+          cd apps/backend
+          RATE_LIMIT_PER_MIN=20 INSIGHTS_LLM=off INSIGHT_TICK_MS=300 AGENTS_ENABLED=false npx tsx src/index.ts > /tmp/backend-h.log 2>&1 &
+          until curl -sf localhost:4000/health > /dev/null; do sleep 1; done
+          npm run smoke:hardening
+      - name: Backend logs on failure
+        if: failure()
+        run: tail -n 100 /tmp/backend.log /tmp/backend-h.log || true

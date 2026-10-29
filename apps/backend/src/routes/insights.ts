@@ -21,6 +21,7 @@ export async function insightRoutes(app: FastifyInstance) {
     if (m.status !== 'active' || !m.last_session_started_at) throw new HttpError(409, 'not_in_call', 'join the active meeting first');
     await app.db.query('update meetings set ai_assist = $2 where id = $1', [m.id, enabled]);
     app.io.to(`meeting:${m.id}`).emit(Events.aiAssist, { enabled });
+    app.analytics.track('ai_assist_toggled', { enabled }, { userId: me.id, projectId: m.project_id, meetingId: m.id });
     if (enabled) app.insights.brief(m.id).catch((e) => app.log.error(e, 'brief failed'));
     return reply.status(204).send();
   });
@@ -53,6 +54,7 @@ export async function insightRoutes(app: FastifyInstance) {
     if (['brief', 'answer', 'recap'].includes(i.kind)) throw new HttpError(400, 'invalid_request', 'no feedback on this kind of card');
     await app.db.query('update insights set feedback = $2 where id = $1', [i.id, value]);
     app.insights.feedback(i.meeting_id, i.kind, i.topic_key, value);
+    app.analytics.track('insight_feedback', { kind: i.kind, verdict: value }, { userId: me.id, projectId: i.project_id, meetingId: i.meeting_id });
     return reply.status(204).send();
   });
 }

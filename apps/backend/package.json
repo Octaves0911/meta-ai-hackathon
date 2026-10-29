@@ -18,7 +18,8 @@
     "smoke:insights": "node --env-file=../../.env scripts/smoke-insights.mjs",
     "smoke:tasks": "node --env-file=../../.env scripts/smoke-tasks.mjs",
     "smoke:agents": "node --env-file=../../.env scripts/smoke-agents.mjs",
-    "smoke:workspace": "node --env-file=../../.env scripts/smoke-workspace.mjs"
+    "smoke:workspace": "node --env-file=../../.env scripts/smoke-workspace.mjs",
+    "smoke:hardening": "node --env-file=../../.env scripts/smoke-hardening.mjs"
   },
   "dependencies": {
     "@fastify/multipart": "^10.1.6",
@@ -26,7 +27,8 @@
     "fastify": "^5.0.0",
     "pg": "^8.23.1",
     "socket.io": "^4.8.4",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^22.7.0",

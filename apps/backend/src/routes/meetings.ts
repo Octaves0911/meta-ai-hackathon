@@ -100,6 +100,7 @@ export async function meetingRoutes(app: FastifyInstance) {
       return rows[0];
     });
     await sendInvites(meeting, pr[0].name, me, body.inviteeIds);
+    app.analytics.track('meeting_created', { value: body.scheduledAt ? 'scheduled' : 'instant' }, { userId: me.id, projectId: req.params.id, meetingId: meeting.id });
     return reply.status(201).send(toMeeting({ ...meeting, owner_name: me.username }));
   });
 
@@ -169,6 +170,7 @@ export async function meetingRoutes(app: FastifyInstance) {
         `update meeting_participants set invite_status = 'joined', joined_at = coalesce(joined_at, now()),
            last_session_started_at = now() where meeting_id = $1 and user_id = $2`, [m.id, me.id]);
     });
+    app.analytics.track('meeting_joined', {}, { userId: me.id, projectId: m.project_id, meetingId: m.id });
     return { status: 'active' };
   });
 
@@ -191,6 +193,7 @@ export async function meetingRoutes(app: FastifyInstance) {
     });
     app.io.to(`meeting:${m.id}`).emit('meeting:ended', { meetingId: m.id });
     app.closeCaptions(m.id);
+    void app.db.query('select total_duration_sec from meetings where id = $1', [m.id]).then((r) => app.analytics.track('meeting_closed', { durationSec: r.rows[0]?.total_duration_sec ?? 0 }, { userId: me.id, projectId: m.project_id, meetingId: m.id }));
     // Make this meeting's discussion searchable for future meetings; failures must not affect ending the meeting.
     // Final extraction pass + recap card, then index the transcript so future meetings can find it.
     app.insights.finalize(m.id).catch((e) => app.log.error(e, 'insight finalize failed'));

@@ -57,6 +57,7 @@ export class InsightService {
   async process(m: MeetingRow) {
     if (this.busy.has(m.id)) return;
     this.busy.add(m.id);
+    const t0 = performance.now();
     try {
       const cursor = this.cursors.get(m.id) ?? 0;
       const { rows } = await this.db.query(
@@ -72,6 +73,7 @@ export class InsightService {
       await this.flushQueue(m.id);
     } finally {
       this.busy.delete(m.id);
+      this.app.metrics.observe('meetpilot_insight_pass_seconds', 'Duration of one insight pipeline pass', (performance.now() - t0) / 1000, {}, [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30]);
     }
   }
 
@@ -111,6 +113,7 @@ export class InsightService {
        values ($1,$2,$3,$4,$5,$6,$7,$8) on conflict (event_id) where event_id is not null do nothing returning id`,
       [m.id, m.project_id, taskTitle(ev.summary), ev.quote || ev.summary, assignee, assigner, due, eventId]);
     if (!rows[0]) return;
+    this.app.analytics.track('task_created', {}, { projectId: m.project_id, meetingId: m.id });
     await this.emitTask(m.id, rows[0].id);
     await indexRecord(this.db, this.app.embedder, 'task', rows[0].id).catch((e) => this.app.log.error(e));
   }
@@ -259,6 +262,7 @@ export class InsightService {
       `insert into insights(meeting_id, project_id, kind, tier, title, body, quote, source_label, source_url, score, topic_key, audience_user_id)
        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning *`,
       [m.id, m.project_id, v.kind, tier, v.title, v.body ?? v.message ?? '', v.quote ?? null, v.sourceLabel, v.sourceUrl ?? null, v.score, v.topicKey, audience]);
+    this.app.analytics.track('insight_posted', { kind: v.kind, tier }, { projectId: m.project_id, meetingId: m.id });
     return toInsight(rows[0]);
   }
 
@@ -383,6 +387,7 @@ export class InsightService {
 
   /** `@ai <question>`: answer from project memory plus the asker's own private sources (F5.8, F9.6). */
   async ask(meeting: { id: string; project_id: string; ai_assist: boolean }, asker: { id: string; username: string }, question: string) {
+    this.app.analytics.track('ai_question_asked', {}, { userId: asker.id, projectId: meeting.project_id, meetingId: meeting.id });
     const askId = createHash('md5').update(`${meeting.id}${asker.id}${Date.now()}`).digest('hex').slice(0, 12);
     const working = (done: boolean) => this.app.io.to(`meeting:${meeting.id}`).emit('ai:working', { askId, userId: asker.id, done });
     if (!meeting.ai_assist) {

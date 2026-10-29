@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 INTERNAL_SECRET = os.environ.get("INTERNAL_SECRET")
 if not INTERNAL_SECRET:
     sys.exit("INTERNAL_SECRET is not set; refusing to start")
+if os.environ.get("NODE_ENV") == "production" and (len(INTERNAL_SECRET) < 24 or INTERNAL_SECRET == "dev-only-change-me"):
+    sys.exit("INTERNAL_SECRET is weak or still the example value; refusing to start")
 
 EMBEDDING_DIM = 1536
 

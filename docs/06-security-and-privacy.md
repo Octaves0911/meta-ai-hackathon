@@ -14,7 +14,7 @@ Browser ⟷ backend (user identity by username header — **demo-grade**, add OI
 | Unauthorized meeting data access | Chat/transcript endpoints check owner-or-shared flag; personal notes keyed by `(meeting,user)` |
 | Service impersonation | Secret header required; unset secret ⇒ service refuses to start |
 | Data remnants | Disconnect/delete cascades through relational rows, `memory_chunks`, `external_items`, artifacts in object storage |
-| Cost abuse | `STT_MODE=off`, AI switch gating, per-meeting governor caps, per-user rate limits (60 req/min REST) |
+| Cost abuse | `STT_MODE=off`, AI switch gating, per-meeting governor caps, per-user rate limits (120 req/min REST, stricter budgets for send/upload/chat/search/OAuth; see doc 08) |
 | Upload risks | 50 MB cap, MIME sniffing, files served with `Content-Disposition` + `nosniff`; workspace local-folder paths confined to configured root (no `..`) |
 
 ## 3. Data classification

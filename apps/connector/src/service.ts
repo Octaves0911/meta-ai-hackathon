@@ -46,7 +46,7 @@ export class Connector {
     return { url: google.authUrl(signState(a), a.services, !!a.sendAccess) };
   }
 
-  async complete(code: string, stateToken: string): Promise<{ projectId: string; connectionIds: string[]; returnTo?: string }> {
+  async complete(code: string, stateToken: string): Promise<{ projectId: string; userId: string; providers: Provider[]; connectionIds: string[]; returnTo?: string }> {
     this.ensureReady();
     const state = verifyState(stateToken);
     if (!state) throw new ConnectorError(400, 'invalid_state', 'the sign-in link expired or is invalid');
@@ -75,7 +75,7 @@ export class Connector {
         ids.push(rows[0].id);
       }
     }
-    return { projectId: state.projectId, connectionIds: ids, returnTo: state.returnTo };
+    return { projectId: state.projectId, userId: state.userId, providers: state.services, connectionIds: ids, returnTo: state.returnTo };
   }
 
   // ---- views --------------------------------------------------------------------------------------------------

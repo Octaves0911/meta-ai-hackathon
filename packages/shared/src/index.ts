@@ -174,7 +174,7 @@ export const EmailDraftBody = z.object({
   to: z.array(z.string().email()).max(MAX_RECIPIENTS), cc: z.array(z.string().email()).max(MAX_RECIPIENTS),
   subject: z.string().max(300).refine(noBreaks, 'subject must be a single line'), body: z.string().max(50000),
 }).refine((d) => d.to.length + d.cc.length <= MAX_RECIPIENTS, { message: `at most ${MAX_RECIPIENTS} recipients in total`, path: ['to'] });
-export const SendEmailBody = z.object({ artifactId: z.string().uuid(), confirm: z.literal(true, { errorMap: () => ({ message: 'sending needs explicit confirmation' }) }) });
+export const SendEmailBody = z.object({ artifactId: z.string().uuid(), confirm: z.literal(true, { error: 'sending needs explicit confirmation' }) });
 
 export interface ConnectionView {
   id: string; provider: 'gmail' | 'drive'; visibility: 'private' | 'project'; status: 'needs_setup' | 'connected' | 'syncing' | 'error' | string;
