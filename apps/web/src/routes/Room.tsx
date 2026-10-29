@@ -80,16 +80,17 @@ export function Room() {
         ) : <div className="waiting">Waiting for others…</div>}
         <VideoTile className="self-tile" self stream={mesh.local} name={user.username} />
         <div className="controls">
-          <button onClick={mesh.toggleMic} aria-pressed={!mesh.micOn} disabled={!mesh.local?.getAudioTracks().length}>{mesh.micOn ? '🎤 Mute' : '🔇 Unmute'}</button>
-          <button onClick={mesh.toggleCam} aria-pressed={!mesh.camOn} disabled={!mesh.local?.getVideoTracks().length}>{mesh.camOn ? '📷 Camera off' : '📷 Camera on'}</button>
+          <button onClick={mesh.toggleMic} aria-pressed={!mesh.micOn} disabled={!mesh.local?.getAudioTracks().length}>{!mesh.local?.getAudioTracks().length ? '🎤 No microphone' : mesh.micOn ? '🎤 Mute' : '🔇 Unmute'}</button>
+          <button onClick={mesh.toggleCam} aria-pressed={!mesh.camOn} disabled={!mesh.local?.getVideoTracks().length}>{!mesh.local?.getVideoTracks().length ? '📷 No camera' : mesh.camOn ? '📷 Camera off' : '📷 Camera on'}</button>
         </div>
       </section>
       <aside className="side" aria-label="Side panel">
         <div role="tablist" className="tabs">
           {TABS.map((t) => <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>{t}</button>)}
         </div>
-        {tab === 'Chat' && <ChatPanel meetingId={id} />}
-        {tab === 'Notes' && <NotesPanel meetingId={id} />}
+        {/* Wait for the join call: chat access requires an active session. */}
+        {ready && tab === 'Chat' && <ChatPanel meetingId={id} />}
+        {ready && tab === 'Notes' && <NotesPanel meetingId={id} />}
         {(tab === 'Tasks' || tab === 'AI') && <p className="muted" style={{ padding: 16 }}>Available in a later release.</p>}
       </aside>
     </div>
