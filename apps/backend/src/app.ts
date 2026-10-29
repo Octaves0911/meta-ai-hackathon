@@ -8,6 +8,7 @@ import { projectRoutes } from './routes/projects.js';
 import { meetingRoutes } from './routes/meetings.js';
 import { notificationRoutes } from './routes/notifications.js';
 import { roomRoutes } from './routes/room.js';
+import { transcriptRoutes } from './routes/transcript.js';
 import { attachRealtime } from './realtime.js';
 
 declare module 'fastify' {
@@ -45,5 +46,6 @@ export function buildApp(db: pg.Pool): FastifyInstance {
   app.register(meetingRoutes, { prefix: '/api' });
   app.register(notificationRoutes, { prefix: '/api' });
   app.register(roomRoutes, { prefix: '/api' });
+  app.register(transcriptRoutes, { prefix: '/api' });
   return app;
 }
