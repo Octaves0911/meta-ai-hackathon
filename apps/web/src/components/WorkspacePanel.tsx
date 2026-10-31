@@ -1,6 +1,8 @@
+import { ChevronDown, ChevronRight, Download, File as FileIcon, FileImage, FileText, Folder, FolderOpen, Lock, RefreshCw, Save, Search, Trash2, Upload } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { WorkspaceFile, WorkspaceInfo } from '@meetpilot/shared';
 import { api, storedUser } from '../lib/api';
+import { EmptyState, toast, useConfirm } from '../ui';
 
 interface FileDetail extends WorkspaceFile { content: string | null }
 interface Node { name: string; path: string; folder: boolean; file?: WorkspaceFile; children: Node[] }
@@ -32,6 +34,7 @@ async function fetchBlob(path: string): Promise<Blob> {
 }
 
 export function WorkspacePanel({ projectId }: { projectId: string }) {
+  const confirmDialog = useConfirm();
   const [info, setInfo] = useState<WorkspaceInfo | null>(null);
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
   const [selected, setSelected] = useState<FileDetail | null>(null);
@@ -93,7 +96,7 @@ export function WorkspacePanel({ projectId }: { projectId: string }) {
   };
 
   const remove = async (f: WorkspaceFile) => {
-    if (!confirm(`Delete ${f.path}? This removes the file and its search index.`)) return;
+    if (!(await confirmDialog({ title: `Delete ${f.path}?`, message: 'This removes the file and its search index.', confirmLabel: 'Delete file', danger: true }))) return;
     try { await api(`/files/${f.id}`, { method: 'DELETE' }); if (selected?.id === f.id) setSelected(null); await load(); } catch (e) { setError((e as Error).message); }
   };
 
@@ -104,7 +107,7 @@ export function WorkspacePanel({ projectId }: { projectId: string }) {
         <div key={c.path}>
           <button className={`tree-row${targetDir === c.path ? ' target' : ''}`} style={{ paddingLeft: 8 + depth * 14 }} aria-expanded={!isCollapsed}
             onClick={() => { setTargetDir(c.path); setCollapsed((s) => { const x = new Set(s); isCollapsed ? x.delete(c.path) : x.add(c.path); return x; }); }}>
-            {isCollapsed ? '▸' : '▾'} 📁 {c.name}
+            {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}{isCollapsed ? <Folder size={16} /> : <FolderOpen size={16} />} {c.name}
           </button>
           {!isCollapsed && renderNode(c, depth + 1)}
         </div>
@@ -113,7 +116,7 @@ export function WorkspacePanel({ projectId }: { projectId: string }) {
     const f = c.file!;
     return (
       <button key={c.path} className={`tree-row${selected?.id === f.id ? ' active' : ''}`} style={{ paddingLeft: 8 + depth * 14 }} title={f.summary ?? f.path} onClick={() => open(f)}>
-        📄 {c.name} {f.kind === 'local' && <span className="badge">local</span>}
+        {/\.(png|jpe?g|gif|webp)$/i.test(f.path) ? <FileImage size={16} /> : f.textual ? <FileText size={16} /> : <FileIcon size={16} />} {c.name} {f.kind === 'local' && <span className="pill" style={{ marginLeft: 'auto' }}>local</span>}
       </button>
     );
   });
@@ -124,10 +127,10 @@ export function WorkspacePanel({ projectId }: { projectId: string }) {
     <div className="ws" onDragOver={(e) => canWrite && e.preventDefault()} onDrop={(e) => { if (!canWrite) return; e.preventDefault(); if (e.dataTransfer.files.length) void upload(e.dataTransfer.files); }}>
       <aside className="ws-side">
         <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
-          <input aria-label="Search files" placeholder="Search files…" value={query} onChange={(e) => void search(e.target.value)} style={{ flex: 1, minWidth: 120 }} />
-          {canWrite && <><button className="mini" onClick={() => input.current?.click()}>Upload{targetDir ? ` to ${targetDir}/` : ''}</button>
+          <div style={{ position: 'relative', flex: 1, minWidth: 120 }}><Search size={15} style={{ position: 'absolute', left: 10, top: 12, color: 'var(--text-3)' }} /><input aria-label="Search files" placeholder="Search files…" value={query} onChange={(e) => void search(e.target.value)} style={{ paddingLeft: 32 }} /></div>
+          {canWrite && <><button className="mini" onClick={() => input.current?.click()}><Upload size={14} /> Upload{targetDir ? ` to ${targetDir}/` : ''}</button>
             <input ref={input} type="file" multiple hidden onChange={(e) => { if (e.target.files?.length) void upload(e.target.files); e.target.value = ''; }} /></>}
-          {info.localRoot && canWrite && <button className="mini" onClick={rescan}>Rescan</button>}
+          {info.localRoot && canWrite && <button className="mini" onClick={rescan}><RefreshCw size={14} /> Rescan</button>}
         </div>
         {msg && <p className="muted" role="status" style={{ fontSize: 13 }}>{msg}</p>}
         {error && <p className="error" role="alert">{error}</p>}
@@ -154,10 +157,10 @@ export function WorkspacePanel({ projectId }: { projectId: string }) {
             ))
           ) : files.length === 0 ? <p className="muted" style={{ padding: 8 }}>No files yet. {canWrite ? 'Upload some or drop them here.' : ''}</p> : renderNode(tree, 0)}
         </div>
-        {!canWrite && <p className="muted" style={{ fontSize: 12 }}>Read-only access.</p>}
+        {!canWrite && <p className="faint" style={{ fontSize: 12.5, marginTop: 8 }}><Lock size={12} style={{ verticalAlign: -1 }} /> Read-only access</p>}
       </aside>
       <section className="ws-main">
-        {selected ? <Viewer key={selected.id} file={selected} canWrite={!!canWrite} onSaved={load} onDelete={() => remove(selected)} /> : <div className="card"><p className="muted">Select a file to preview or edit it.</p></div>}
+        {selected ? <Viewer key={selected.id} file={selected} canWrite={!!canWrite} onSaved={load} onDelete={() => remove(selected)} /> : <div className="card"><EmptyState icon={FileText} title="Select a file">Preview images and PDFs, or edit text and code files right here.</EmptyState></div>}
       </section>
     </div>
   );
@@ -193,9 +196,9 @@ function Viewer({ file, canWrite, onSaved, onDelete }: { file: FileDetail; canWr
       <div className="row" style={{ justifyContent: 'space-between' }}>
         <div><strong>{file.path}</strong> <span className="muted">· {size ?? 0} bytes · {file.kind}</span>{file.summary && <div className="muted" style={{ fontSize: 13 }}>{file.summary}</div>}</div>
         <div className="row">
-          {isText && canWrite && <button className="primary" onClick={save} disabled={!dirty}>Save</button>}
-          <button onClick={download}>Download</button>
-          {canWrite && file.kind === 'cloud' && <button className="danger" onClick={onDelete}>Delete</button>}
+          {isText && canWrite && <button className="primary" onClick={save} disabled={!dirty}><Save size={15} /> Save</button>}
+          <button onClick={download}><Download size={15} /> Download</button>
+          {canWrite && file.kind === 'cloud' && <button className="danger" onClick={onDelete}><Trash2 size={15} /> Delete</button>}
         </div>
       </div>
       {status && <span className="muted" role="status">{status}</span>}

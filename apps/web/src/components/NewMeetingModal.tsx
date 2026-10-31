@@ -1,9 +1,9 @@
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import type { Meeting, User } from '@meetpilot/shared';
 import { api, useSession } from '../lib/api';
+import { Avatar, Modal } from '../ui';
 
-export function NewMeetingModal({ projectId, onClose, onCreated }:
-  { projectId: string; onClose: () => void; onCreated: (m: Meeting) => void }) {
+export function NewMeetingModal({ projectId, onClose, onCreated }: { projectId: string; onClose: () => void; onCreated: (m: Meeting) => void }) {
   const { user } = useSession();
   const [users, setUsers] = useState<User[]>([]);
   const [title, setTitle] = useState('');
@@ -13,67 +13,46 @@ export function NewMeetingModal({ projectId, onClose, onCreated }:
   const [shareChat, setShareChat] = useState(false);
   const [shareWs, setShareWs] = useState(false);
   const [error, setError] = useState('');
-  const first = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    first.current?.focus();
-    api<User[]>('/users').then((l) => setUsers(l.filter((u) => u.id !== user?.id)));
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, user]);
-
+  useEffect(() => { api<User[]>('/users').then((l) => setUsers(l.filter((u) => u.id !== user?.id))); }, [user]);
   const toggle = (id: string) => setInvitees((l) => (l.includes(id) ? l.filter((x) => x !== id) : [...l, id]));
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    setBusy(true); setError('');
     try {
-      onCreated(await api<Meeting>(`/projects/${projectId}/meetings`, {
-        method: 'POST',
-        json: {
-          title, description: description || undefined,
-          scheduledAt: when ? new Date(when).toISOString() : undefined,
-          inviteeIds: invitees, shareChatTranscript: shareChat, shareWorkspace: shareWs,
-        },
-      }));
-    } catch (err) { setError((err as Error).message); }
+      onCreated(await api<Meeting>(`/projects/${projectId}/meetings`, { method: 'POST', json: {
+        title, description: description || undefined, scheduledAt: when ? new Date(when).toISOString() : undefined,
+        inviteeIds: invitees, shareChatTranscript: shareChat, shareWorkspace: shareWs } }));
+    } catch (err) { setError((err as Error).message); setBusy(false); }
   };
 
   return (
-    <div className="modal-backdrop" onMouseDown={onClose}>
-      <form className="card modal" role="dialog" aria-modal="true" aria-labelledby="nm-title"
-        onMouseDown={(e) => e.stopPropagation()} onSubmit={submit} style={{ maxHeight: '90vh', overflow: 'auto' }}>
-        <h2 id="nm-title">New meeting</h2>
+    <Modal open onClose={onClose} title="New meeting" description="Start an instant call, or schedule one and invite your team.">
+      <form onSubmit={submit}>
         <label htmlFor="nm-t">Title</label>
-        <input id="nm-t" ref={first} value={title} onChange={(e) => setTitle(e.target.value)} />
-        <label htmlFor="nm-d">Description</label>
+        <input id="nm-t" value={title} onChange={(e) => setTitle(e.target.value)} autoFocus placeholder="Sprint sync" />
+        <label htmlFor="nm-d">Description <span className="faint">(optional)</span></label>
         <textarea id="nm-d" rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />
-        <label htmlFor="nm-w">Schedule (leave empty for an instant call)</label>
+        <label htmlFor="nm-w">Schedule <span className="faint">(leave empty for an instant call)</span></label>
         <input id="nm-w" type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} />
-        <fieldset style={{ border: 0, padding: 0, margin: '12px 0 0' }}>
-          <legend className="muted" style={{ fontSize: 14 }}>Invitees</legend>
-          {users.length === 0 && <p className="muted">No other users yet.</p>}
-          {users.map((u) => (
-            <label key={u.id} className="row" style={{ color: 'var(--text)', margin: '4px 0' }}>
-              <input type="checkbox" style={{ width: 'auto' }} checked={invitees.includes(u.id)} onChange={() => toggle(u.id)} />
-              {u.username}
-            </label>
-          ))}
+        <fieldset style={{ border: 0, padding: 0, margin: '14px 0 0' }}>
+          <legend style={{ fontSize: 13, fontWeight: 550, color: 'var(--text-2)', marginBottom: 6 }}>Invite people</legend>
+          {users.length === 0 && <p className="muted" style={{ margin: 0 }}>No other users yet.</p>}
+          <div className="stack" style={{ gap: 4 }}>
+            {users.map((u) => (
+              <label key={u.id} className="check" style={{ margin: 0, padding: '6px 8px', borderRadius: 8, background: invitees.includes(u.id) ? 'var(--accent-soft)' : 'transparent' }}>
+                <input type="checkbox" checked={invitees.includes(u.id)} onChange={() => toggle(u.id)} /><Avatar name={u.username} size="sm" /> {u.username}
+              </label>
+            ))}
+          </div>
         </fieldset>
-        <label className="row" style={{ color: 'var(--text)' }}>
-          <input type="checkbox" style={{ width: 'auto' }} checked={shareChat} onChange={(e) => setShareChat(e.target.checked)} />
-          Share chat &amp; transcript with invitees
-        </label>
-        <label className="row" style={{ color: 'var(--text)' }}>
-          <input type="checkbox" style={{ width: 'auto' }} checked={shareWs} onChange={(e) => setShareWs(e.target.checked)} />
-          Allow invitees into the project's workspace
-        </label>
+        <label className="check"><input type="checkbox" checked={shareChat} onChange={(e) => setShareChat(e.target.checked)} /> Share chat and transcript with invitees</label>
+        <label className="check"><input type="checkbox" checked={shareWs} onChange={(e) => setShareWs(e.target.checked)} /> Let invitees view the project workspace</label>
         {error && <p className="error" role="alert">{error}</p>}
-        <div className="row" style={{ justifyContent: 'flex-end', marginTop: 16 }}>
-          <button type="button" onClick={onClose}>Cancel</button>
-          <button className="primary" disabled={!title.trim()}>{when ? 'Schedule' : 'Start now'}</button>
-        </div>
+        <div className="dialog-actions"><button type="button" onClick={onClose}>Cancel</button><button className="primary" disabled={!title.trim() || busy}>{when ? 'Schedule meeting' : 'Start now'}</button></div>
       </form>
-    </div>
+    </Modal>
   );
 }

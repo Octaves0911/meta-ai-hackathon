@@ -6,7 +6,7 @@ import { Landing } from './routes/Landing';
 import { GetStarted } from './routes/GetStarted';
 import { Dashboard } from './routes/Dashboard';
 import { Toaster } from 'sonner';
-import { useTheme } from './ui';
+import { ConfirmProvider, useTheme } from './ui';
 import { MeetingDetail } from './routes/MeetingDetail';
 import { Room } from './routes/Room';
 import { Reviews } from './routes/Reviews';
@@ -36,6 +36,7 @@ export function App() {
   return (
     <SessionContext.Provider value={session}>
       <Toaster theme={resolved} position="bottom-right" richColors closeButton />
+      <ConfirmProvider>
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<Landing />} />
@@ -48,6 +49,7 @@ export function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
+      </ConfirmProvider>
     </SessionContext.Provider>
   );
 }

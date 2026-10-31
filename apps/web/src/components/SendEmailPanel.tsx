@@ -1,6 +1,8 @@
+import { CheckCircle2, Mail, Send, ShieldCheck } from 'lucide-react';
 import { useState } from 'react';
 import type { ExecutionDetail } from '@meetpilot/shared';
 import { api } from '../lib/api';
+import { Modal, toast } from '../ui';
 
 /** After approval: allow sending (separate permission), review the exact email, confirm, send. Every send is listed. */
 export function SendEmailPanel({ d, onDone }: { d: ExecutionDetail; onDone: () => Promise<unknown> }) {
@@ -28,7 +30,7 @@ export function SendEmailPanel({ d, onDone }: { d: ExecutionDetail; onDone: () =
     setBusy(true); setError('');
     try {
       await api(`/executions/${d.id}/send-email`, { method: 'POST', json: { artifactId: draft.id, confirm: true } });
-      setConfirming(false); await onDone();
+      setConfirming(false); toast.success('Email sent'); await onDone();
     } catch (e) {
       const msg = (e as Error).message;
       if (/allow MeetPilot to send/i.test(msg)) { setNeedsPermission(true); setConfirming(false); }
@@ -38,9 +40,9 @@ export function SendEmailPanel({ d, onDone }: { d: ExecutionDetail; onDone: () =
 
   return (
     <div className="card" style={{ marginTop: 16 }}>
-      <h3>Send email</h3>
+      <h3 className="row" style={{ gap: 8 }}><Mail size={17} /> Send email</h3>
       {d.send.sent.map((s, i) => (
-        <p key={i} className="note-inline" role="status">✅ Sent {new Date(s.sentAt).toLocaleString()} from {s.from ?? 'your Gmail'} to {s.to.join(', ')}{s.cc.length ? ` (cc ${s.cc.join(', ')})` : ''} — “{s.subject}”</p>
+        <p key={i} className="note-inline success" role="status"><CheckCircle2 size={17} style={{ flex: 'none', marginTop: 2 }} /> Sent {new Date(s.sentAt).toLocaleString()} from {s.from ?? 'your Gmail'} to {s.to.join(', ')}{s.cc.length ? ` (cc ${s.cc.join(', ')})` : ''} — “{s.subject}”</p>
       ))}
       {!already && (
         <>
@@ -49,33 +51,25 @@ export function SendEmailPanel({ d, onDone }: { d: ExecutionDetail; onDone: () =
           {!granted ? (
             <div>
               <p>MeetPilot can only <strong>read</strong> your Gmail today. To send this email, allow sending — you will be taken to Google and brought back here.</p>
-              <button className="primary" onClick={allow} disabled={busy || to.length === 0}>Allow sending via Gmail</button>
+              <button className="primary" onClick={allow} disabled={busy || to.length === 0}><ShieldCheck size={16} /> Allow sending via Gmail</button>
             </div>
-          ) : <button className="primary" onClick={() => setConfirming(true)} disabled={to.length === 0}>Send via Gmail…</button>}
+          ) : <button className="primary" onClick={() => setConfirming(true)} disabled={to.length === 0}><Send size={16} /> Send via Gmail…</button>}
         </>
       )}
       {error && <p className="error" role="alert">{error}</p>}
 
-      {confirming && (
-        <div className="modal-backdrop" onMouseDown={() => !busy && setConfirming(false)}>
-          <div className="card modal" role="dialog" aria-modal="true" aria-labelledby="send-title" style={{ maxWidth: 560 }} onMouseDown={(e) => e.stopPropagation()}>
-            <h2 id="send-title">Send this email?</h2>
-            <dl className="task-meta" style={{ gridTemplateColumns: '80px 1fr' }}>
-              <dt>From</dt><dd>{d.send.account ?? 'your Gmail account'}</dd>
-              <dt>To</dt><dd>{to.join(', ')}</dd>
-              {cc.length > 0 && <><dt>Cc</dt><dd>{cc.join(', ')}</dd></>}
-              <dt>Subject</dt><dd>{p.subject}</dd>
-            </dl>
-            <pre className="mail-preview">{p.body}</pre>
-            {p.thread_id && <p className="muted" style={{ fontSize: 12 }}>This will be sent as a reply in your existing thread.</p>}
-            {error && <p className="error" role="alert">{error}</p>}
-            <div className="row" style={{ justifyContent: 'flex-end' }}>
-              <button onClick={() => setConfirming(false)} disabled={busy}>Cancel</button>
-              <button className="primary" onClick={send} disabled={busy}>{busy ? 'Sending…' : 'Send email'}</button>
-            </div>
-          </div>
-        </div>
-      )}
+      <Modal open={confirming} onClose={() => !busy && setConfirming(false)} title="Send this email?" description="Check the recipients and text. This sends from your Gmail." wide>
+        <dl className="kv" style={{ gridTemplateColumns: '70px 1fr', gap: '8px 12px', margin: '10px 0' }}>
+          <dt>From</dt><dd>{d.send.account ?? 'your Gmail account'}</dd>
+          <dt>To</dt><dd>{to.join(', ')}</dd>
+          {cc.length > 0 && <><dt>Cc</dt><dd>{cc.join(', ')}</dd></>}
+          <dt>Subject</dt><dd>{p.subject}</dd>
+        </dl>
+        <pre className="mail-preview">{p.body}</pre>
+        {p.thread_id && <p className="faint" style={{ fontSize: 12.5, marginTop: 8 }}>Sent as a reply in your existing thread.</p>}
+        {error && <p className="error" role="alert">{error}</p>}
+        <div className="dialog-actions"><button onClick={() => setConfirming(false)} disabled={busy}>Cancel</button><button className="primary" onClick={send} disabled={busy}>{busy ? 'Sending…' : 'Send email'}</button></div>
+      </Modal>
     </div>
   );
 }
