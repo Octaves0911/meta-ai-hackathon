@@ -5,6 +5,7 @@ import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import type { Meeting, Project, ProjectOverview } from '@meetpilot/shared';
 import { api, useSession } from '../lib/api';
 import { AppShell, type NavKey } from '../components/AppShell';
+import { IntelligenceDashboard } from '../components/intel/IntelligenceDashboard';
 import { IntegrationsPanel } from '../components/IntegrationsPanel';
 import { MeetingsTable } from '../components/MeetingsTable';
 import { NewMeetingModal } from '../components/NewMeetingModal';
@@ -12,11 +13,11 @@ import { NewProjectModal } from '../components/NewProjectModal';
 import { WorkspacePanel } from '../components/WorkspacePanel';
 import { EmptyState, Skeleton, toast, useConfirm } from '../ui';
 
-const PANEL_TITLE: Record<string, string> = { meetings: 'Meetings', workspace: 'Workspace', integrations: 'Integrations' };
+const PANEL_TITLE: Record<string, string> = { overview: 'Overview', meetings: 'Meetings', workspace: 'Workspace', integrations: 'Integrations' };
 
 export function Dashboard() {
   const { user } = useSession();
-  const { panel = 'meetings' } = useParams();
+  const { panel = 'overview' } = useParams();
   const nav = useNavigate();
   const confirm = useConfirm();
   const [projects, setProjects] = useState<Project[] | null>(null);
@@ -44,7 +45,7 @@ export function Dashboard() {
 
   if (!user) return <Navigate to="/start" replace />;
   const project = projects?.find((p) => p.id === projectId);
-  const active = (['meetings', 'workspace', 'integrations'].includes(panel) ? panel : 'meetings') as NavKey;
+  const active = (['overview', 'meetings', 'workspace', 'integrations'].includes(panel) ? panel : 'overview') as NavKey;
 
   const deleteProject = async () => {
     if (!project) return;
@@ -79,6 +80,7 @@ export function Dashboard() {
               )}
             </div>
 
+            {active === 'overview' && <IntelligenceDashboard projectId={project.id} />}
             {active === 'meetings' && (
               <>
                 <Stats o={overview} />

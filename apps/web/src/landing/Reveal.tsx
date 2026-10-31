@@ -4,11 +4,11 @@ import { useRef, type ReactNode } from 'react';
 const EASE = [0.2, 0.7, 0.2, 1] as const;
 
 /** Fade-and-rise when scrolled into view (instant for reduced motion). */
-export function Reveal({ children, delay = 0, y = 28, className, as = 'div' }: { children: ReactNode; delay?: number; y?: number; className?: string; as?: 'div' | 'section' | 'li' }) {
+export function Reveal({ children, delay = 0, y = 28, className, as = 'div', now = false }: { children: ReactNode; delay?: number; y?: number; className?: string; as?: 'div' | 'section' | 'li'; now?: boolean }) {
   const reduced = useReducedMotion();
   const M = motion[as];
   return (
-    <M className={className} initial={reduced ? false : { opacity: 0, y }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true, margin: '-12% 0px' }} transition={{ duration: 0.8, ease: EASE, delay }}>
+    <M className={className} initial={reduced ? false : { opacity: 0, y }} {...(now ? { animate: { opacity: 1, y: 0 } } : { whileInView: { opacity: 1, y: 0 } })} viewport={{ once: true, margin: '-12% 0px' }} transition={{ duration: 0.8, ease: EASE, delay }}>
       {children}
     </M>
   );
