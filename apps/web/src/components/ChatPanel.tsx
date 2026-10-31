@@ -1,3 +1,4 @@
+import { SendHorizontal, Sparkles } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ChatMessage, Insight } from '@meetpilot/shared';
 import { InsightCard } from './InsightCard';
@@ -96,7 +97,7 @@ export function ChatPanel({ meetingId }: { meetingId: string }) {
       <div className="messages" ref={box} onScroll={onScroll} aria-live="polite">
         {loadingOlder && <div className="muted center-text">Loading…</div>}
         {!hasMore && messages.length > 0 && <div className="muted center-text">Start of conversation</div>}
-        {messages.length === 0 && <p className="muted">No messages yet.</p>}
+        {messages.length === 0 && <div className="empty" style={{ margin: 'auto' }}><div className="empty-icon"><Sparkles size={22} /></div><h3>No messages yet</h3><p>Say hello, or type <span className="kbd">@ai</span> followed by a question to ask the assistant.</p></div>}
         {messages.map((m) => m.kind === 'ai_insight' && m.insight ? (
           <InsightCard key={m.id} insight={m.insight} />
         ) : (
@@ -105,12 +106,12 @@ export function ChatPanel({ meetingId }: { meetingId: string }) {
             <div>{m.body}</div>
           </div>
         ))}
-        {asking.length > 0 && <div className="muted ai-working" role="status"><span className="spinner" aria-hidden /> AI is looking through project memory…</div>}
+        {asking.length > 0 && <div className="ai-working" role="status"><span className="spinner" aria-hidden /> Looking through project memory…</div>}
       </div>
       {error && <p className="error" role="alert">{error}</p>}
-      <form className="row" onSubmit={send} style={{ padding: 8 }}>
-        <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Message… (@ai to ask the assistant)" aria-label="Message" />
-        <button className="primary" disabled={!draft.trim()}>Send</button>
+      <form className="composer" onSubmit={send}>
+        <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Message… or @ai to ask the assistant" aria-label="Message" />
+        <button className="primary icon" disabled={!draft.trim()} aria-label="Send message"><SendHorizontal size={17} /></button>
       </form>
     </div>
   );
