@@ -5,12 +5,15 @@ import { api, SessionContext, storedUser, storeUser } from './lib/api';
 import { Landing } from './routes/Landing';
 import { GetStarted } from './routes/GetStarted';
 import { Dashboard } from './routes/Dashboard';
+import { Toaster } from 'sonner';
+import { useTheme } from './ui';
 import { MeetingDetail } from './routes/MeetingDetail';
 import { Room } from './routes/Room';
 import { Reviews } from './routes/Reviews';
 import { Review } from './routes/Review';
 
 export function App() {
+  const { resolved } = useTheme();
   const [user, setUser] = useState<User | null>(null);
   const [ready, setReady] = useState(false);
 
@@ -32,6 +35,7 @@ export function App() {
   if (!ready) return null;
   return (
     <SessionContext.Provider value={session}>
+      <Toaster theme={resolved} position="bottom-right" richColors closeButton />
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<Landing />} />
