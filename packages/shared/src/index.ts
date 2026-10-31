@@ -223,3 +223,21 @@ export interface ProjectIntelligence {
   timeline: TimelineItem[];
   tasks: IntelTask[];
 }
+
+// ---- Per-meeting insights ----
+export type MomentType = 'decision' | 'task' | 'deadline' | 'question' | 'blocker' | 'info' | 'conflict';
+export interface Moment {
+  id: string; type: MomentType; title: string; who: string | null; quote: string | null;
+  seq: number | null; atMs: number | null; at: string;
+  changedFrom: { value: string; meeting: MeetingRef | null } | null;   // decisions that replaced an earlier value
+  raisedBefore: MeetingRef[];                                           // same topic in earlier meetings
+}
+export interface MeetingSummary {
+  readable: boolean;                  // false when the owner has not shared the conversation with this viewer
+  recap: { title: string; body: string; createdAt: string } | null;
+  kpis: { lines: number; words: number; speakers: number; decisions: number; tasks: number; questions: number; blockers: number; conflicts: number; messages: number };
+  speakers: { name: string; lines: number; words: number; share: number; minutes: number }[];
+  pulse: { label: string; lines: number; marks: Partial<Record<MomentType, number>> }[];
+  moments: Moment[];
+  tasks: { total: number; done: number; overdue: number; unassigned: number; byStatus: Record<TaskStatusT, number>; byAssignee: { name: string; total: number; done: number }[] };
+}
