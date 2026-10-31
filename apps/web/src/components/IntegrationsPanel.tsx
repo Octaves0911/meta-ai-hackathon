@@ -1,24 +1,26 @@
+import { Check, FolderOpen, HardDrive, Lock, Mail, RefreshCw, ShieldCheck, Trash2, Users } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import type { ConnectionView } from '@meetpilot/shared';
 import { api } from '../lib/api';
+import { Modal, toast, useConfirm } from '../ui';
 
 const ERRORS: Record<string, string> = {
   cancelled: 'Google sign-in was cancelled.', invalid_state: 'The sign-in link expired. Please try again.', oauth_failed: 'Google did not accept the sign-in. Please try again.',
   not_configured: 'Google is not configured on this server yet (ask the admin to set the Google credentials).', failed: 'Connecting failed. Please try again.',
 };
 const NAME = { gmail: 'Gmail', drive: 'Google Drive' } as const;
+const LOGO = { gmail: Mail, drive: HardDrive } as const;
 const STATUS: Record<string, string> = { needs_setup: 'Choose what to sync', connected: 'Connected', syncing: 'Syncing…', error: 'Needs attention' };
 
 export function IntegrationsPanel({ projectId }: { projectId: string }) {
   const [params, setParams] = useSearchParams();
   const [conns, setConns] = useState<ConnectionView[] | null>(null);
   const [services, setServices] = useState<{ gmail: boolean; drive: boolean }>({ gmail: true, drive: true });
-  const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [confirmShare, setConfirmShare] = useState<ConnectionView | null>(null);
 
-  const load = useCallback(() => api<ConnectionView[]>(`/projects/${projectId}/connections`).then(setConns).catch((e) => setError(e.message)), [projectId]);
+  const load = useCallback(() => api<ConnectionView[]>(`/projects/${projectId}/connections`).then(setConns).catch((e) => { toast.error(e.message); setConns([]); }), [projectId]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     if (!conns?.some((c) => c.status === 'syncing')) return;
@@ -31,86 +33,86 @@ export function IntegrationsPanel({ projectId }: { projectId: string }) {
 
   const connect = async () => {
     const picked = (Object.keys(services) as ('gmail' | 'drive')[]).filter((s) => services[s]);
-    if (!picked.length) return setError('Pick Gmail, Drive or both.');
-    setBusy(true); setError('');
+    if (!picked.length) return toast.error('Pick Gmail, Drive or both.');
+    setBusy(true);
     try { const r = await api<{ url: string }>(`/projects/${projectId}/connections/google/start`, { method: 'POST', json: { services: picked, visibility: 'private' } }); window.location.href = r.url; }
-    catch (e) { setError((e as Error).message); setBusy(false); }
+    catch (e) { toast.error((e as Error).message); setBusy(false); }
   };
 
-  const act = async (fn: () => Promise<unknown>) => { setError(''); try { await fn(); await load(); } catch (e) { setError((e as Error).message); } };
+  const act = async (fn: () => Promise<unknown>, ok?: string) => { try { await fn(); if (ok) toast.success(ok); await load(); } catch (e) { toast.error((e as Error).message); } };
 
   return (
-    <div style={{ maxWidth: 820 }}>
-      <div className="card"><strong>Your data stays yours.</strong>
-        <p className="muted" style={{ margin: '4px 0 0' }}>MeetPilot asks for read-only access. Nothing is read until you choose labels or folders, and every source is <strong>only visible to you</strong> unless you share it.
-          Disconnecting revokes Google’s access and deletes everything indexed from it.</p></div>
-      {banner && <div className={banner.ok ? 'note-inline' : 'card'} role={banner.ok ? 'status' : 'alert'} style={{ marginTop: 12 }}>{banner.text} <button className="mini" onClick={() => setParams({})}>Dismiss</button></div>}
-      {error && <p className="error" role="alert">{error}</p>}
+    <div className="stack" style={{ maxWidth: 860 }}>
+      <div className="card accent">
+        <div className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
+          <ShieldCheck size={22} style={{ color: 'var(--accent-text)', flex: 'none', marginTop: 2 }} />
+          <div><strong>Your data stays yours.</strong>
+            <p className="muted" style={{ margin: '4px 0 0' }}>MeetPilot asks for read-only access. Nothing is read until you choose labels or folders, and every source is <strong>only visible to you</strong> unless you share it. Disconnecting revokes Google’s access and deletes everything indexed from it.</p></div>
+        </div>
+      </div>
+      {banner && <div className={`note-inline ${banner.ok ? 'success' : ''}`} role={banner.ok ? 'status' : 'alert'}>{banner.text} <button className="link-btn" onClick={() => setParams({})}>Dismiss</button></div>}
 
-      <div className="card" style={{ marginTop: 12 }}>
+      <div className="card">
         <h3>Connect Google</h3>
-        <div className="row" style={{ marginBottom: 8 }}>
-          {(['gmail', 'drive'] as const).map((s) => (
-            <label key={s} className="row" style={{ color: 'var(--text)', margin: 0 }}>
-              <input type="checkbox" style={{ width: 'auto' }} checked={services[s]} onChange={(e) => setServices({ ...services, [s]: e.target.checked })} /> {NAME[s]}
-            </label>
-          ))}
+        <p className="muted">Pick what MeetPilot may read for this project. You can change this any time.</p>
+        <div className="row" style={{ gap: 18, margin: '4px 0 14px' }}>
+          {(['gmail', 'drive'] as const).map((k) => {
+            const Icon = LOGO[k];
+            return <label key={k} className="check" style={{ margin: 0, padding: '10px 14px', border: '1px solid var(--border-strong)', borderRadius: 10, background: services[k] ? 'var(--accent-soft)' : 'transparent' }}>
+              <input type="checkbox" checked={services[k]} onChange={(e) => setServices({ ...services, [k]: e.target.checked })} /><Icon size={17} /> {NAME[k]}</label>;
+          })}
         </div>
         <button className="primary" onClick={connect} disabled={busy}>Connect Google</button>
       </div>
 
-      <h3 style={{ margin: '20px 0 8px' }}>Connections</h3>
-      {conns === null ? <p className="muted">Loading…</p> : conns.length === 0 ? <div className="card"><p className="muted">No sources connected yet.</p></div> : (
-        <div style={{ display: 'grid', gap: 12 }}>
-          {conns.map((c) => (
-            <ConnectionCard key={c.id} c={c} reload={load} act={act}
-              onShare={() => setConfirmShare(c)} />
-          ))}
-        </div>
+      <div className="section-title" style={{ margin: '8px 0 0' }}><h3>Connections</h3></div>
+      {conns === null ? <div className="card"><div className="skeleton" style={{ height: 70 }} /></div> : conns.length === 0 ? <div className="card"><div className="empty"><div className="empty-icon"><Mail size={24} /></div><h3>No sources connected</h3><p>Connect Gmail or Drive so the assistant can cite your own mail and files, privately.</p></div></div> : (
+        <div className="stack">{conns.map((c) => <ConnectionCard key={c.id} c={c} reload={load} act={act} onShare={() => setConfirmShare(c)} />)}</div>
       )}
 
-      {confirmShare && (
-        <div className="modal-backdrop" onMouseDown={() => setConfirmShare(null)}>
-          <div className="card modal" role="dialog" aria-modal="true" aria-labelledby="share-title" onMouseDown={(e) => e.stopPropagation()}>
-            <h2 id="share-title">Share {NAME[confirmShare.provider]} with this project?</h2>
-            <p>Everyone in the project will be able to see snippets of your <strong>{confirmShare.provider === 'gmail' ? 'selected mail' : 'selected files'}</strong> in meetings, chat and assistant answers — including the senders and subjects. You can make it private again at any time.</p>
-            <div className="row" style={{ justifyContent: 'flex-end' }}>
-              <button onClick={() => setConfirmShare(null)}>Keep private</button>
-              <button className="primary" onClick={() => { const c = confirmShare; setConfirmShare(null); void act(() => api(`/connections/${c.id}`, { method: 'PUT', json: { visibility: 'project', confirmShare: true } })); }}>Share with project</button>
-            </div>
+      <Modal open={!!confirmShare} onClose={() => setConfirmShare(null)} title={`Share ${confirmShare ? NAME[confirmShare.provider] : ''} with this project?`}>
+        {confirmShare && <>
+          <p>Everyone in the project will be able to see snippets of your <strong>{confirmShare.provider === 'gmail' ? 'selected mail' : 'selected files'}</strong> in meetings, chat and assistant answers, including senders and subjects. You can make it private again at any time.</p>
+          <div className="dialog-actions">
+            <button onClick={() => setConfirmShare(null)}>Keep private</button>
+            <button className="primary" onClick={() => { const c = confirmShare; setConfirmShare(null); void act(() => api(`/connections/${c.id}`, { method: 'PUT', json: { visibility: 'project', confirmShare: true } }), 'Shared with the project'); }}>Share with project</button>
           </div>
-        </div>
-      )}
+        </>}
+      </Modal>
     </div>
   );
 }
 
-function ConnectionCard({ c, reload, act, onShare }: { c: ConnectionView; reload: () => Promise<unknown>; act: (fn: () => Promise<unknown>) => Promise<void>; onShare: () => void }) {
+function ConnectionCard({ c, reload, act, onShare }: { c: ConnectionView; reload: () => Promise<unknown>; act: (fn: () => Promise<unknown>, ok?: string) => Promise<void>; onShare: () => void }) {
+  const confirm = useConfirm();
   const [open, setOpen] = useState(c.status === 'needs_setup');
   const shared = c.visibility === 'project';
+  const Icon = LOGO[c.provider];
+  const statusTone = c.status === 'error' ? 'danger' : c.status === 'connected' ? 'success' : c.status === 'syncing' ? 'accent' : 'warn';
   return (
-    <article className="card" aria-label={`${NAME[c.provider]} connection`}>
-      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'start' }}>
-        <div>
-          <strong>{c.provider === 'gmail' ? '✉️' : '📁'} {NAME[c.provider]}</strong> <span className="muted">· {c.account ?? 'account'}{!c.isOwner && ` · shared by ${c.ownerName}`}</span>
-          <div className="muted" style={{ fontSize: 13, marginTop: 2 }}>
-            {c.itemCount} item{c.itemCount === 1 ? '' : 's'} indexed · {c.lastSyncAt ? `last sync ${new Date(c.lastSyncAt).toLocaleString()}` : 'not synced yet'}
+    <article className="card conn-card" aria-label={`${NAME[c.provider]} connection`}>
+      <div className="head">
+        <div className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
+          <span className="conn-logo"><Icon size={20} /></span>
+          <div>
+            <strong>{NAME[c.provider]}</strong> <span className="muted">· {c.account ?? 'account'}{!c.isOwner && ` · shared by ${c.ownerName}`}</span>
+            <div className="faint" style={{ fontSize: 13, marginTop: 2 }}>{c.itemCount} item{c.itemCount === 1 ? '' : 's'} indexed · {c.lastSyncAt ? `last sync ${new Date(c.lastSyncAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}` : 'not synced yet'}</div>
           </div>
         </div>
-        <div className="row">
-          <span className="badge" title={shared ? 'Visible to everyone in this project' : 'Only you can see this'}>{shared ? '👥 Everyone in this project' : '🔒 Only me'}</span>
-          <span className={`status status-${c.status === 'error' ? 'failed' : c.status === 'connected' ? 'approved' : 'running'}`}>{STATUS[c.status] ?? c.status}</span>
+        <div className="row" style={{ flexWrap: 'wrap' }}>
+          <span className={`pill ${shared ? 'accent' : ''}`} title={shared ? 'Visible to everyone in this project' : 'Only you can see this'}>{shared ? <><Users size={12} /> Everyone in project</> : <><Lock size={12} /> Only me</>}</span>
+          <span className={`pill ${statusTone}`}>{c.status === 'connected' && <Check size={12} />}{STATUS[c.status] ?? c.status}</span>
         </div>
       </div>
       {c.lastError && <p className="error" role="alert">{c.lastError}</p>}
       {c.isOwner && (
         <>
-          <div className="row" style={{ marginTop: 10, flexWrap: 'wrap' }}>
+          <div className="row" style={{ marginTop: 14, flexWrap: 'wrap', gap: 8 }}>
             <button className="mini" onClick={() => setOpen(!open)} aria-expanded={open}>{open ? 'Hide settings' : 'What to sync'}</button>
-            <button className="mini" disabled={c.status === 'needs_setup' || c.status === 'syncing'} onClick={() => act(() => api(`/connections/${c.id}/sync`, { method: 'POST' }))}>Sync now</button>
-            {shared ? <button className="mini" onClick={() => act(() => api(`/connections/${c.id}`, { method: 'PUT', json: { visibility: 'private' } }))}>Make private</button>
-              : <button className="mini" onClick={onShare}>Share with project…</button>}
-            <button className="mini danger" onClick={() => { if (confirm(`Disconnect ${NAME[c.provider]}? Google access is revoked and everything indexed from it is deleted.`)) void act(() => api(`/connections/${c.id}`, { method: 'DELETE' })); }}>Disconnect</button>
+            <button className="mini" disabled={c.status === 'needs_setup' || c.status === 'syncing'} onClick={() => act(() => api(`/connections/${c.id}/sync`, { method: 'POST' }), 'Sync started')}><RefreshCw size={13} /> Sync now</button>
+            {shared ? <button className="mini" onClick={() => act(() => api(`/connections/${c.id}`, { method: 'PUT', json: { visibility: 'private' } }), 'Now private')}><Lock size={13} /> Make private</button>
+              : <button className="mini" onClick={onShare}><Users size={13} /> Share with project…</button>}
+            <button className="mini danger" onClick={async () => { if (await confirm({ title: `Disconnect ${NAME[c.provider]}?`, message: 'Google access is revoked and everything indexed from it is deleted.', confirmLabel: 'Disconnect', danger: true })) void act(() => api(`/connections/${c.id}`, { method: 'DELETE' }), 'Disconnected'); }}><Trash2 size={13} /> Disconnect</button>
           </div>
           {open && (c.provider === 'gmail' ? <GmailSettings c={c} onSaved={reload} /> : <DriveSettings c={c} onSaved={reload} />)}
         </>
@@ -171,7 +173,7 @@ function DriveSettings({ c, onSaved }: { c: ConnectionView; onSaved: () => Promi
         <div key={f.id} className="row" style={{ margin: '2px 0' }}>
           <input type="checkbox" style={{ width: 'auto' }} aria-label={`Sync ${f.name}`} checked={picked.some((p) => p.id === f.id)}
             onChange={(e) => setPicked(e.target.checked ? [...picked, f] : picked.filter((p) => p.id !== f.id))} />
-          <button className="mini" onClick={() => setPath([...path, f])}>📁 {f.name} ›</button>
+          <button className="mini" onClick={() => setPath([...path, f])}><FolderOpen size={13} /> {f.name}</button>
         </div>
       ))}
       {picked.length > 0 && <p className="muted" style={{ fontSize: 13 }}>Selected: {picked.map((p) => p.name).join(', ')}</p>}
