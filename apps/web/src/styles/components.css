@@ -70,7 +70,8 @@ hr, .divider { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 @keyframes pulse { 50% { opacity: 0.35; transform: scale(0.8); } }
 .badge-count { margin-left: 6px; background: var(--danger); color: #fff; border-radius: 999px; padding: 1px 6px; font-size: 11px; font-weight: 650; min-width: 18px; text-align: center; }
 .badge-count.neutral { background: var(--text-3); }
-.status { font-size: 12px; font-weight: 600; text-transform: capitalize; border-radius: 999px; padding: 4px 10px; background: var(--surface-3); color: var(--text-2); white-space: nowrap; }
+.status { font-size: 12px; font-weight: 600; text-transform: none; border-radius: 999px; padding: 4px 10px; background: var(--surface-3); color: var(--text-2); white-space: nowrap; }
+.status::first-letter { text-transform: uppercase; }
 .status-done, .status-approved { background: var(--success-soft); color: var(--success-text); }
 .status-in_progress, .status-review, .status-running, .status-routed, .status-changes_requested { background: var(--accent-soft); color: var(--accent-text); }
 .status-awaiting_review { background: var(--warn-soft); color: var(--warn-text); }
