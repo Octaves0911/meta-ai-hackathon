@@ -38,7 +38,7 @@ export function AppShell({ active, crumbs, actions, projects, projectId, onProje
       <aside className="sidebar" aria-label="Sidebar">
         <div className="row" style={{ justifyContent: 'space-between' }}>
           <Link to="/dashboard" className="brand"><Logo /><span>MeetPilot</span></Link>
-          <button className="ghost icon" onClick={() => setCollapsed(!collapsed)} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} title={collapsed ? 'Expand' : 'Collapse'}>
+          <button className="ghost icon collapse-btn" onClick={() => setCollapsed(!collapsed)} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} title={collapsed ? 'Expand' : 'Collapse'}>
             {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
           </button>
         </div>
