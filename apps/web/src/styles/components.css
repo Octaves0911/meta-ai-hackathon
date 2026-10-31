@@ -135,3 +135,4 @@ hr, .divider { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 
 /* ---- toasts (sonner) ---- */
 [data-sonner-toaster] { font-family: var(--font) !important; }
+.spin { animation: spin 0.8s linear infinite; }
