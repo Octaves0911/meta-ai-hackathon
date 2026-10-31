@@ -62,7 +62,9 @@ export function computeMeetingSummary(inp: MeetingInput): MeetingSummary {
     let raisedBefore: MeetingRef[] = [];
     if (['question', 'blocker', 'task', 'deadline'].includes(e.type)) {
       const tok = tokens(e.summary);
-      const hits = inp.earlierEvents.filter((x) => x.type === e.type && x.meeting_id !== inp.meetingId && ((e.entity_key && x.entity_key === e.entity_key) || jaccard(tok, tokens(x.summary)) >= 0.5));
+      const here = +new Date(inp.meetings.find((x) => x.id === inp.meetingId)?.created_at ?? e.created_at);
+      const before = (id: string) => { const mm = inp.meetings.find((x) => x.id === id); return !!mm && +new Date(mm.created_at) < here; };
+      const hits = inp.earlierEvents.filter((x) => x.type === e.type && x.meeting_id !== inp.meetingId && before(x.meeting_id) && ((e.entity_key && x.entity_key === e.entity_key) || jaccard(tok, tokens(x.summary)) >= 0.5));
       raisedBefore = [...new Map(hits.map((x) => [x.meeting_id, ref(x.meeting_id)]).filter(([, v]) => v) as [string, MeetingRef][]).values()].sort((a, b) => +new Date(a.at) - +new Date(b.at));
     }
     const seg = e.segment_from_seq != null ? segAt.get(e.segment_from_seq) : undefined;

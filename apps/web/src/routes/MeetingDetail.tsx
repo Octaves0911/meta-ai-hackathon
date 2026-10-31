@@ -1,10 +1,15 @@
-import { ArrowLeft, CheckCircle2, Clock, DoorOpen, ListChecks, MessageSquare, Mic, PhoneOff, StickyNote, Users, Video } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Clock, DoorOpen, Sparkles, ListChecks, MessageSquare, Mic, PhoneOff, StickyNote, Users, Video } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
-import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
-import type { MeetingDetail as Detail, Task } from '@meetpilot/shared';
+import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import type { MeetingDetail as Detail, MeetingSummary, Task } from '@meetpilot/shared';
+import { ChatTab } from '../components/meeting/ChatTab';
+import { InsightsTab } from '../components/meeting/InsightsTab';
+import { NotesPanel } from '../components/NotesPanel';
+import { TasksTab } from '../components/meeting/TasksTab';
+import { TranscriptTab } from '../components/meeting/TranscriptTab';
+import '../styles/meeting.css';
 import { AppShell } from '../components/AppShell';
 import { StatusPill } from '../components/MeetingsTable';
-import { TaskTable } from '../components/TaskTable';
 import { api, useSession } from '../lib/api';
 import { Avatar, EmptyState, Skeleton, toast, useConfirm } from '../ui';
 
@@ -18,12 +23,19 @@ export function MeetingDetail() {
   const [m, setM] = useState<Detail | null>(null);
   const [error, setError] = useState('');
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [summary, setSummary] = useState<MeetingSummary | null>(null);
+  const [params, setParams] = useSearchParams();
+  const [focusSeq, setFocusSeq] = useState<number | null>(null);
+  const tab = (['insights', 'tasks', 'transcript', 'chat', 'notes'].includes(params.get('tab') ?? '') ? params.get('tab') : 'insights') as 'insights' | 'tasks' | 'transcript' | 'chat' | 'notes';
+  const setTab = (t: string) => setParams({ tab: t }, { replace: true });
+  const jump = (seq: number) => { setFocusSeq(seq); setTab('transcript'); };
 
   const load = useCallback(() => api<Detail>(`/meetings/${id}`).then(setM).catch((e) => setError(e.message)), [id]);
   useEffect(() => { if (user) void load(); }, [user, load]);
   useEffect(() => {
     if (user) api<{ tasks: Task[] }>(`/meetings/${id}/tasks?limit=100`).then((r) => setTasks(r.tasks.slice().reverse())).catch(() => {});
   }, [user, id]);
+  useEffect(() => { if (user) api<MeetingSummary>(`/meetings/${id}/summary`).then(setSummary).catch(() => {}); }, [user, id]);
   if (!user) return <Navigate to="/start" replace />;
 
   const act = async (path: string, json?: unknown, ok?: string) => {
@@ -43,13 +55,12 @@ export function MeetingDetail() {
   const joined = m.myInviteStatus === 'joined';
   const canJoin = !over && !invited && !!m.myInviteStatus && m.myInviteStatus !== 'declined';
 
-  const facts = [
-    { icon: Clock, label: 'Duration', value: `${Math.floor(m.totalDurationSec / 60)}m ${m.totalDurationSec % 60}s` },
-    { icon: Users, label: 'Participants', value: m.participants.length },
-    { icon: MessageSquare, label: 'Messages', value: m.stats.messages },
-    { icon: ListChecks, label: 'Tasks', value: tasks.length },
-    { icon: Mic, label: 'Transcript lines', value: m.stats.transcriptSegments },
-    { icon: StickyNote, label: 'Private notes', value: m.stats.notes },
+  const tabs: { key: typeof tab; label: string; icon: typeof Mic; count?: number }[] = [
+    { key: 'insights', label: 'Insights', icon: Sparkles },
+    { key: 'tasks', label: 'Tasks', icon: ListChecks, count: tasks.length },
+    { key: 'transcript', label: 'Transcript', icon: Mic, count: m.stats.transcriptSegments },
+    { key: 'chat', label: 'Chat', icon: MessageSquare, count: m.stats.messages },
+    { key: 'notes', label: 'My notes', icon: StickyNote },
   ];
 
   return (
@@ -70,18 +81,24 @@ export function MeetingDetail() {
       {over && <div className="note-inline info" role="status"><CheckCircle2 size={18} /> This meeting has ended. Its tasks and transcript stay available here.</div>}
       {error && <p className="error" role="alert">{error}</p>}
 
-      <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
-        {facts.map(({ icon: Icon, label, value }) => (
-          <div className="card stat-card" key={label} style={{ padding: '14px 16px' }}>
-            <div className="label"><span className="ico"><Icon size={15} /></span>{label}</div><div className="stat" style={{ fontSize: 24 }}>{value}</div>
-          </div>
+      <div className="meta-strip">
+        <span><Clock size={14} /> {Math.floor(m.totalDurationSec / 60)}m {m.totalDurationSec % 60}s</span><span><Users size={14} /> {m.participants.length} people</span>
+        <span>Started {fmt(m.startedAt)}</span>{m.endedAt && <span>Ended {fmt(m.endedAt)}</span>}
+      </div>
+      <div className="tabs" role="tablist">
+        {tabs.map(({ key, label, icon: Icon, count }) => (
+          <button key={key} role="tab" aria-selected={tab === key} className={tab === key ? 'on' : ''} onClick={() => setTab(key)}><Icon size={15} /> {label}{count != null && <em>{count}</em>}</button>
         ))}
       </div>
+      <div className="tab-panel" key={tab}>
+        {tab === 'insights' && (summary ? <InsightsTab s={summary} onJump={jump} /> : <Skeleton h={260} />)}
+        {tab === 'tasks' && <TasksTab tasks={tasks} />}
+        {tab === 'transcript' && <TranscriptTab meetingId={m.id} summary={summary} focusSeq={focusSeq} />}
+        {tab === 'chat' && <ChatTab meetingId={m.id} />}
+        {tab === 'notes' && <div className="card" style={{ height: 380 }}><NotesPanel meetingId={m.id} /></div>}
+      </div>
 
-      <div className="section-title"><h3>Tasks</h3></div>
-      <div className="card list-card" style={{ overflowX: 'auto' }}>{tasks.length ? <TaskTable tasks={tasks} /> : <EmptyState icon={ListChecks} title="No tasks yet">Commitments like “I will send the report by Friday” become tasks automatically.</EmptyState>}</div>
-
-      <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', marginTop: 18 }}>
+      <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', marginTop: 22 }}>
         <div className="card">
           <h3>Timeline</h3>
           <dl className="kv" style={{ gridTemplateColumns: '1fr 1fr' }}>
