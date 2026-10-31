@@ -1,0 +1,93 @@
+/* MeetPilot design tokens — "Meta blue" palette, light + dark. Everything else reads these variables. */
+:root {
+  color-scheme: light;
+  --bg: #f4f6fa;
+  --surface: #ffffff;
+  --surface-2: #f8fafd;
+  --surface-3: #eef2f8;
+  --border: #e2e7f0;
+  --border-strong: #cbd3e1;
+  --text: #0f1729;
+  --text-2: #4a5670;
+  --text-3: #7a869c;
+
+  --accent: #0866ff;
+  --accent-hover: #0757d8;
+  --accent-soft: #e7f0ff;
+  --accent-text: #0551d6;
+  --on-accent: #ffffff;
+
+  --ai: #7b3ff2;
+  --ai-soft: #f0e9fe;
+  --ai-text: #5b21b6;
+
+  --success: #12b76a;  --success-soft: #e7f8ef;  --success-text: #067647;
+  --warn: #f79009;     --warn-soft: #fef3e2;     --warn-text: #b54708;
+  --danger: #f04438;   --danger-soft: #feecea;   --danger-text: #b42318;
+
+  --shadow-sm: 0 1px 2px rgba(15, 23, 41, 0.06);
+  --shadow-md: 0 4px 16px rgba(15, 23, 41, 0.08), 0 1px 3px rgba(15, 23, 41, 0.06);
+  --shadow-lg: 0 18px 48px rgba(15, 23, 41, 0.16);
+  --overlay: rgba(15, 23, 41, 0.45);
+  --video-bg: #0b1020;
+
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --focus: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent);
+
+  --font: 'Inter Variable', Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #0a0e1a;
+  --surface: #121829;
+  --surface-2: #171e33;
+  --surface-3: #1d2640;
+  --border: #243049;
+  --border-strong: #33425f;
+  --text: #eaf0ff;
+  --text-2: #a5b1cc;
+  --text-3: #7686a6;
+
+  --accent: #3d8bff;
+  --accent-hover: #5c9dff;
+  --accent-soft: rgba(61, 139, 255, 0.16);
+  --accent-text: #8fbaff;
+  --on-accent: #06122b;
+
+  --ai: #a78bfa;
+  --ai-soft: rgba(167, 139, 250, 0.16);
+  --ai-text: #c4b5fd;
+
+  --success: #34d399;  --success-soft: rgba(52, 211, 153, 0.14);  --success-text: #6ee7b7;
+  --warn: #fbbf24;     --warn-soft: rgba(251, 191, 36, 0.14);     --warn-text: #fcd34d;
+  --danger: #f87171;   --danger-soft: rgba(248, 113, 113, 0.14);  --danger-text: #fca5a5;
+
+  --shadow-sm: none;
+  --shadow-md: 0 0 0 1px var(--border);
+  --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.55);
+  --overlay: rgba(2, 5, 14, 0.66);
+  --video-bg: #05070f;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font-family: var(--font); font-size: 15px; line-height: 1.5; font-feature-settings: 'cv11', 'ss01';
+  -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+}
+h1, h2, h3, h4 { margin: 0 0 8px; line-height: 1.2; letter-spacing: -0.015em; font-weight: 650; }
+h1 { font-size: 28px; } h2 { font-size: 21px; } h3 { font-size: 16px; letter-spacing: -0.01em; }
+p { margin: 0 0 8px; }
+a { color: var(--accent-text); text-decoration: none; }
+a:hover { text-decoration: underline; text-underline-offset: 3px; }
+code, pre, kbd { font-family: var(--mono); font-size: 0.92em; }
+::selection { background: var(--accent-soft); }
+:focus-visible { outline: none; box-shadow: var(--focus); border-radius: var(--radius-sm); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; } }
