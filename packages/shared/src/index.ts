@@ -192,3 +192,34 @@ export interface WorkspaceInfo {
 }
 export const WorkspaceSettingsBody = z.object({ shareWorkspace: z.boolean().optional(), localRoot: z.string().max(200).nullable().optional() });
 export const SaveFileBody = z.object({ content: z.string().max(1_100_000) });
+
+// ---- Project intelligence (analytics derived from meetings, decisions, tasks and their history) ----
+export interface IntelTask {
+  id: string; meetingId: string; meetingTitle: string; title: string; assignee: string | null;
+  status: TaskStatusT; priority: string; category: string; department: string;
+  dueDate: string | null; createdAt: string; completedAt: string | null;
+  overdue: boolean; daysLate: number | null; rescheduled: number;
+}
+export type TaskStatusT = 'open' | 'in_progress' | 'review' | 'done';
+export interface MeetingRef { id: string; title: string; at: string }
+export interface Slice { key: string; label: string; total: number; done: number; overdue: number }
+export interface Pattern { key: string; title: string; count: number; meetings: MeetingRef[]; firstSeen: string; lastSeen: string; resolved: boolean; who: string[] }
+export interface Risk { id: string; severity: 'high' | 'medium' | 'low'; title: string; detail: string; drill?: { kind: 'tasks' | 'conflicts' | 'patterns' | 'changes'; assignee?: string; filter?: 'overdue' | 'review' } }
+export interface StatementChange { key: string; label: string; kind: 'decision' | 'deadline'; from: string; to: string; fromBy: string | null; by: string | null; at: string; fromAt: string; meeting: MeetingRef | null; fromMeeting: MeetingRef | null; contradictsOther: boolean }
+export interface PersonStats { name: string; assigned: number; done: number; open: number; overdue: number; late: number; onTime: number; onTimeRate: number | null; avgDelayDays: number; share: number; rescheduled: number }
+export interface TimelineItem { at: string; type: 'meeting' | 'decision' | 'conflict' | 'change' | 'done' | 'overdue'; title: string; detail?: string; meetingId?: string }
+export interface ProjectIntelligence {
+  generatedAt: string; today: string; weeks: number;
+  health: { score: number | null; label: 'on_track' | 'at_risk' | 'critical' | 'no_data'; drivers: { key: string; label: string; score: number; weight: number; note: string }[]; risks: Risk[] };
+  kpis: { totalTasks: number; done: number; inProgress: number; review: number; pending: number; overdue: number; completionRate: number; onTimeRate: number | null; conflicts: number; reversals: number; openBlockers: number; meetings: number; decisions: number };
+  trend: { week: string; created: number; completed: number; conflicts: number }[];
+  classification: { category: Slice[]; priority: Slice[]; department: Slice[]; assignee: Slice[] };
+  patterns: { recurringTasks: Pattern[]; recurringBlockers: Pattern[]; unresolved: Pattern[] };
+  commitments: { total: number; delivered: number; deliveredLate: number; missed: number; pending: number; rescheduled: number; reliability: number | null;
+    byMeeting: (MeetingRef & { made: number; delivered: number; late: number; missed: number })[] };
+  conflicts: { total: number; items: { id: string; title: string; body: string; at: string; source: string | null; meeting: MeetingRef | null }[] };
+  statementChanges: StatementChange[];
+  accountability: { people: PersonStats[]; team: { assigned: number; done: number; overdue: number; onTimeRate: number | null; avgDelayDays: number } };
+  timeline: TimelineItem[];
+  tasks: IntelTask[];
+}
