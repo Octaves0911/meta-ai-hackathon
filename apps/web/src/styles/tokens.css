@@ -41,7 +41,7 @@
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
-:root[data-theme='dark'] {
+[data-theme='dark'] {
   color-scheme: dark;
   --bg: #0a0e1a;
   --surface: #121829;
