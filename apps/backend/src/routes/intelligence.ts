@@ -1,9 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import type { ProjectIntelligence } from '@meetpilot/shared';
+import type { MeetingSummary, ProjectIntelligence } from '@meetpilot/shared';
 import { requireUser } from '../app.js';
 import { HttpError } from '../errors.js';
 import { computeIntelligence } from '../analytics/compute.js';
+import { computeMeetingSummary } from '../analytics/meeting.js';
+import { canReadConversation, participation } from '../services/access.js';
 import { todayInTz } from '../services/due.js';
 
 const Query = z.object({ weeks: z.coerce.number().int().min(4).max(26).default(12) });
@@ -37,5 +39,29 @@ export async function intelligenceRoutes(app: FastifyInstance) {
          where project_id = $1 and kind = 'conflict' and audience_user_id is null and meeting_id = any($2)`, [req.params.id, ids]),
     ]);
     return computeIntelligence({ today: todayInTz(), weeks, meetings, tasks: tasks.rows, events: events.rows, decisions: decisions.rows, conflicts: conflicts.rows });
+  });
+
+  // Per-meeting insights. Conversation-derived parts (speakers, moments, pulse) follow the same sharing rule as the transcript.
+  app.get<{ Params: { id: string } }>('/meetings/:id/summary', async (req): Promise<MeetingSummary> => {
+    const me = await requireUser(app, req);
+    const m = await participation(app, req.params.id, me);
+    const readable = canReadConversation(m, me);
+    const [segs, events, earlier, decisions, conflicts, tasks, msgs, recap, meetings] = await Promise.all([
+      readable ? app.db.query('select seq, speaker_name, text, coalesce(started_at_ms, 0) as offset_ms, created_at from transcript_segments where meeting_id = $1 order by seq', [m.id]) : { rows: [] },
+      readable ? app.db.query('select id, meeting_id, type, entity_key, summary, who, quote, segment_from_seq, created_at from knowledge_events where meeting_id = $1', [m.id]) : { rows: [] },
+      readable ? app.db.query(
+        `select e.id, e.meeting_id, e.type, e.entity_key, e.summary, e.who, e.quote, e.segment_from_seq, e.created_at from knowledge_events e
+         join meeting_participants p on p.meeting_id = e.meeting_id and p.user_id = $2 where e.project_id = $1 and e.meeting_id <> $3`, [m.project_id, me.id, m.id]) : { rows: [] },
+      readable ? app.db.query('select entity_key, value, meeting_id, event_id, created_at from decisions where project_id = $1', [m.project_id]) : { rows: [] },
+      readable ? app.db.query("select id, title, body, created_at from insights where meeting_id = $1 and kind = 'conflict' and (audience_user_id is null or audience_user_id = $2)", [m.id, me.id]) : { rows: [] },
+      app.db.query("select t.status, u.username as assignee, to_char(t.due_date, 'YYYY-MM-DD') as due from tasks t left join users u on u.id = t.assigned_to where t.meeting_id = $1 and t.finalized", [m.id]),
+      readable ? app.db.query('select count(*)::int n from chat_messages where meeting_id = $1', [m.id]) : { rows: [{ n: 0 }] },
+      app.db.query("select title, body, created_at from insights where meeting_id = $1 and kind = 'recap' and audience_user_id is null order by created_at desc limit 1", [m.id]),
+      app.db.query('select m.id, m.title, m.created_at, m.ended_at from meetings m join meeting_participants p on p.meeting_id = m.id and p.user_id = $2 where m.project_id = $1', [m.project_id, me.id]),
+    ]);
+    return computeMeetingSummary({
+      meetingId: m.id, today: todayInTz(), segments: segs.rows, events: events.rows, earlierEvents: earlier.rows, decisions: decisions.rows, conflicts: conflicts.rows,
+      tasks: tasks.rows, meetings: meetings.rows, messages: msgs.rows[0].n, recap: recap.rows[0] ?? null, readable,
+    });
   });
 }
