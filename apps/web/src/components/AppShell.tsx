@@ -1,5 +1,5 @@
 import * as Menu from '@radix-ui/react-dropdown-menu';
-import { Bot, ChevronsUpDown, FolderOpen, LayoutDashboard, LogOut, Moon, PanelLeftClose, PanelLeftOpen, Plug, Sun } from 'lucide-react';
+import { Bot, ChevronsUpDown, FolderOpen, Gauge, Video, LogOut, Moon, PanelLeftClose, PanelLeftOpen, Plug, Sun } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import type { Project } from '@meetpilot/shared';
@@ -7,9 +7,10 @@ import { storeUser, useSession } from '../lib/api';
 import { Avatar, Logo, useTheme } from '../ui';
 import { NotificationBell } from './NotificationBell';
 
-export type NavKey = 'meetings' | 'workspace' | 'integrations' | 'reviews';
+export type NavKey = 'overview' | 'meetings' | 'workspace' | 'integrations' | 'reviews';
 const NAV: { key: NavKey; to: string; label: string; icon: typeof Bot }[] = [
-  { key: 'meetings', to: '/dashboard/meetings', label: 'Meetings', icon: LayoutDashboard },
+  { key: 'overview', to: '/dashboard/overview', label: 'Overview', icon: Gauge },
+  { key: 'meetings', to: '/dashboard/meetings', label: 'Meetings', icon: Video },
   { key: 'workspace', to: '/dashboard/workspace', label: 'Workspace', icon: FolderOpen },
   { key: 'integrations', to: '/dashboard/integrations', label: 'Integrations', icon: Plug },
   { key: 'reviews', to: '/reviews', label: 'Agent reviews', icon: Bot },

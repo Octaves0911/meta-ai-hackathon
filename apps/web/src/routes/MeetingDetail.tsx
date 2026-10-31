@@ -34,7 +34,7 @@ export function MeetingDetail() {
     if (await confirm({ title: 'End this meeting for everyone?', message: 'Tasks are generated and agents start on the doable ones.', confirmLabel: 'End meeting', danger: true })) await act('end', undefined, 'Meeting ended');
   };
 
-  const crumbs = <><Link to="/dashboard" className="row" style={{ gap: 6, color: 'var(--text-2)' }}><ArrowLeft size={16} /> Meetings</Link></>;
+  const crumbs = <><Link to="/dashboard/meetings" className="row" style={{ gap: 6, color: 'var(--text-2)' }}><ArrowLeft size={16} /> Meetings</Link></>;
   if (!m) return <AppShell active="meetings" crumbs={crumbs}>{error ? <div className="card"><EmptyState icon={Video} title="Meeting not found">{error}</EmptyState></div> : <div className="stack"><Skeleton h={34} w={280} /><Skeleton h={90} /></div>}</AppShell>;
 
   const isOwner = m.ownerId === user.id;

@@ -12,6 +12,7 @@
     "db:reset": "tsx --env-file=../../.env src/db/migrate.ts down all && npm run db:migrate",
     "db:status": "tsx --env-file=../../.env src/db/migrate.ts status",
     "db:seed": "tsx --env-file=../../.env src/db/seed.ts",
+    "db:seed-demo": "tsx --env-file=../../.env src/db/seed-demo.ts",
     "smoke:room": "node scripts/smoke-room.mjs",
     "test": "tsx --env-file=../../.env --test test/*.test.ts",
     "smoke:captions": "node scripts/smoke-captions.mjs",

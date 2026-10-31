@@ -206,7 +206,7 @@ All variables are listed in [`.env.example`](.env.example).
 ./infra/start.sh                                  # start everything
 npm run db:migrate -w @meetpilot/backend          # apply new migrations
 npm run db:seed    -w @meetpilot/backend          # demo data (safe to repeat)
-npm run db:reset   -w @meetpilot/backend          # roll back everything and re-apply
+npm run db:seed-demo -w @meetpilot/backend -- <username>   # 10-week "Atlas Platform Launch" project that fills the Overview analyticsnpm run db:reset   -w @meetpilot/backend          # roll back everything and re-apply
 npm run typecheck                                 # TypeScript, all workspaces
 npm run build -w @meetpilot/web                   # production build of the web app
 docker compose -f infra/docker-compose.yml down   # stop Postgres (add -v to wipe its data)
