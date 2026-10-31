@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { FileDown, Link2, ListChecks, MessageSquare, Mic, MicOff, PhoneOff, Sparkles, StickyNote, Users, Video, VideoOff, Loader2 } from 'lucide-react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 import type { MeetingDetail } from '@meetpilot/shared';
 import { api, storedUser, useSession } from '../lib/api';
@@ -11,17 +12,20 @@ import { VideoTile } from '../components/VideoTile';
 import { ChatPanel } from '../components/ChatPanel';
 import { NotesPanel } from '../components/NotesPanel';
 import { AiNotesPanel } from '../components/AiNotesPanel';
+import { Logo, toast, useConfirm } from '../ui';
 import { useAiNotes } from '../hooks/useAiNotes';
 import { useTasks } from '../hooks/useTasks';
 import { TasksPanel } from '../components/TasksPanel';
 import { EndOverlay } from '../components/EndOverlay';
 
 const TABS = ['Chat', 'Notes', 'Tasks', 'AI'] as const;
+const TAB_ICON = { Chat: MessageSquare, Notes: StickyNote, Tasks: ListChecks, AI: Sparkles } as const;
 
 export function Room() {
   const { id = '' } = useParams();
   const { user } = useSession();
   const nav = useNavigate();
+  const confirm = useConfirm();
   const [meeting, setMeeting] = useState<MeetingDetail | null>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
@@ -72,38 +76,51 @@ export function Room() {
       a.download = `${meeting?.title ?? 'meeting'}-transcript.txt`;
       a.click();
       URL.revokeObjectURL(a.href);
-    } catch (e) { setError((e as Error).message); }
+    } catch (e) { toast.error((e as Error).message); }
+  };
+  const copyLink = async () => {
+    try { await navigator.clipboard.writeText(`${location.origin}/meetings/${id}`); toast.success('Meeting link copied'); } catch { toast.error('Could not copy the link'); }
   };
   const toggleAi = async () => {
     const next = !aiOn;
     setAiOn(next);
     try { await api(`/meetings/${id}/ai-assist`, { method: 'PUT', json: { enabled: next } }); }
-    catch (e) { setAiOn(!next); setError((e as Error).message); }
+    catch (e) { setAiOn(!next); toast.error((e as Error).message); }
   };
   const end = async () => {
-    if (!confirm('End this meeting for everyone?')) return;
-    try { await api(`/meetings/${id}/end`, { method: 'POST' }); } catch (e) { setError((e as Error).message); }
+    if (!(await confirm({ title: 'End this meeting for everyone?', message: 'Tasks are generated and agents start on the doable ones.', confirmLabel: 'End meeting', danger: true }))) return;
+    try { await api(`/meetings/${id}/end`, { method: 'POST' }); } catch (e) { toast.error((e as Error).message); }
   };
 
   const problem = error || mesh.joinError;
-  if (problem) return <div className="center"><div className="card"><p role="alert">{problem}</p><Link to={`/meetings/${id}`}>Back to meeting</Link></div></div>;
+  if (problem) return <div className="auth-panel" style={{ minHeight: '100vh' }}><div className="card auth-card" style={{ textAlign: 'center' }}><h2>Can’t open the room</h2><p role="alert" className="muted">{problem}</p><Link to={`/meetings/${id}`}><button className="primary">Back to meeting</button></Link></div></div>;
+  if (!ready) return <div className="auth-panel" style={{ minHeight: '100vh' }}><div className="row muted"><Loader2 size={18} className="spin" /> Joining the room…</div></div>;
   if (mesh.ended) return <EndOverlay tasks={tasks.finalTasks} fetchAll={tasks.fetchAll} onDone={() => nav(`/meetings/${id}`)} />;
 
   const [main, ...extra] = mesh.peers;
   const isOwner = meeting?.ownerId === user.id;
 
+  const noMic = !mesh.local?.getAudioTracks().length;
+  const noCam = !mesh.local?.getVideoTracks().length;
+
   return (
     <div className="room">
       <header className="room-header">
-        <div><strong>{meeting?.title ?? '…'}</strong> <span className="muted">· {mesh.peers.length + 1} in call</span></div>
-        <div className="row">
-          <label className="ai-switch" title="Live memory-backed assistance for everyone in this meeting">
-            <input type="checkbox" role="switch" checked={aiOn} onChange={toggleAi} /> AI Assistance
+        <div className="left">
+          <Link to={`/meetings/${id}`} aria-label="Back to meeting"><Logo size={28} /></Link>
+          <strong>{meeting?.title ?? '…'}</strong>
+          <span className="pill success live"><span className="dot" /> Live</span>
+          <span className="pill"><Users size={12} /> {mesh.peers.length + 1} in call</span>
+        </div>
+        <div className="right">
+          <label className={`ai-switch${aiOn ? ' on' : ''}`} title="Live, memory-backed assistance for everyone in this meeting">
+            <Sparkles size={14} /> AI Assistance
+            <input className="toggle" type="checkbox" role="switch" checked={aiOn} onChange={toggleAi} aria-label="AI Assistance" />
           </label>
           {isOwner && <button className="danger" onClick={end}>End meeting</button>}
-          <button onClick={leave}>Leave</button>
         </div>
       </header>
+
       <section className="stage" aria-label="Video">
         {mesh.mediaNote && <div className="note" role="status">{mesh.mediaNote}</div>}
         {main ? (
@@ -115,28 +132,45 @@ export function Room() {
               </div>
             )}
           </>
-        ) : <div className="waiting">Waiting for others…</div>}
+        ) : (
+          <div className="waiting">
+            <div><div className="ring"><Users size={28} /></div>
+              <strong style={{ color: '#e8eeff', fontSize: 18, display: 'block' }}>Waiting for others to join</strong>
+              <span>Share the meeting link so your team can come in.</span>
+              <div style={{ marginTop: 14 }}><button onClick={copyLink} style={{ background: 'rgba(255,255,255,0.1)', color: '#fff', borderColor: 'transparent' }}><Link2 size={16} /> Copy meeting link</button></div>
+            </div>
+          </div>
+        )}
         <VideoTile className="self-tile" self stream={mesh.local} name={user.username} />
         <SubtitleOverlay lines={caps.lines} visible={caps.visible} status={capStatus} />
-        <div className="controls">
-          <button onClick={downloadTranscript} aria-label="Download transcript">⤓ Transcript</button>
-          <button onClick={mesh.toggleMic} aria-pressed={!mesh.micOn} disabled={!mesh.local?.getAudioTracks().length}>{!mesh.local?.getAudioTracks().length ? '🎤 No microphone' : mesh.micOn ? '🎤 Mute' : '🔇 Unmute'}</button>
-          <button onClick={mesh.toggleCam} aria-pressed={!mesh.camOn} disabled={!mesh.local?.getVideoTracks().length}>{!mesh.local?.getVideoTracks().length ? '📷 No camera' : mesh.camOn ? '📷 Camera off' : '📷 Camera on'}</button>
+        <div className="controls" role="toolbar" aria-label="Call controls">
+          <button onClick={mesh.toggleMic} aria-pressed={!noMic && !mesh.micOn} disabled={noMic} title={noMic ? 'No microphone' : mesh.micOn ? 'Mute' : 'Unmute'} aria-label={noMic ? 'No microphone' : mesh.micOn ? 'Mute' : 'Unmute'}>
+            {mesh.micOn && !noMic ? <Mic size={20} /> : <MicOff size={20} />}</button>
+          <button onClick={mesh.toggleCam} aria-pressed={!noCam && !mesh.camOn} disabled={noCam} title={noCam ? 'No camera' : mesh.camOn ? 'Turn camera off' : 'Turn camera on'} aria-label={noCam ? 'No camera' : mesh.camOn ? 'Turn camera off' : 'Turn camera on'}>
+            {mesh.camOn && !noCam ? <Video size={20} /> : <VideoOff size={20} />}</button>
+          <button onClick={downloadTranscript} title="Download transcript" aria-label="Download transcript"><FileDown size={20} /></button>
+          <button className="leave" onClick={leave} title="Leave call" aria-label="Leave call"><PhoneOff size={20} /></button>
         </div>
       </section>
+
       <aside className="side" aria-label="Side panel">
         <div role="tablist" className="tabs">
-          {TABS.map((t) => (
-            <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>
-              {t}{t === 'Tasks' && tasks.counts.total > 0 && <span className="badge-count neutral">{tasks.counts.total}</span>}{t === 'AI' && ai.unread > 0 && <span className="badge-count" aria-label={`${ai.unread} unread`}>{ai.unread}</span>}
-            </button>
-          ))}
+          {TABS.map((t) => {
+            const Icon = TAB_ICON[t];
+            return (
+              <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>
+                <Icon size={15} />{t}
+                {t === 'Tasks' && tasks.counts.total > 0 && <span className="badge-count neutral">{tasks.counts.total}</span>}
+                {t === 'AI' && ai.unread > 0 && <span className="badge-count" aria-label={`${ai.unread} unread`}>{ai.unread}</span>}
+              </button>
+            );
+          })}
         </div>
         {/* Wait for the join call: chat access requires an active session. */}
-        {ready && tab === 'Chat' && <ChatPanel meetingId={id} />}
-        {ready && tab === 'Notes' && <NotesPanel meetingId={id} />}
+        {tab === 'Chat' && <ChatPanel meetingId={id} />}
+        {tab === 'Notes' && <NotesPanel meetingId={id} />}
         {tab === 'AI' && <AiNotesPanel notes={ai.notes} hasMore={ai.hasMore} loadOlder={ai.loadOlder} aiOn={aiOn} error={ai.error} />}
-        {ready && tab === 'Tasks' && <TasksPanel tasks={tasks.tasks} counts={tasks.counts} filter={tasks.filter} setFilter={tasks.setFilter}
+        {tab === 'Tasks' && <TasksPanel tasks={tasks.tasks} counts={tasks.counts} filter={tasks.filter} setFilter={tasks.setFilter}
           hasMore={tasks.hasMore} loadMore={tasks.loadMore} error={tasks.error} />}
       </aside>
     </div>

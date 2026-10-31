@@ -1,9 +1,10 @@
+import { AlertTriangle, BellRing, ClipboardList, Mail, MessageSquareQuote, NotebookText, SearchX, ThumbsDown, ThumbsUp, Lock, Lightbulb } from 'lucide-react';
 import { useState } from 'react';
 import type { Insight } from '@meetpilot/shared';
 import { api } from '../lib/api';
 
-const ICON: Record<Insight['kind'], string> = {
-  conflict: '⚠️', answer: '💬', reminder: '⏰', context: '📎', no_record: '∅', external: '✉️', brief: '📋', recap: '📋',
+const ICON: Record<Insight['kind'], typeof Lightbulb> = {
+  conflict: AlertTriangle, answer: MessageSquareQuote, reminder: BellRing, context: Lightbulb, no_record: SearchX, external: Mail, brief: ClipboardList, recap: NotebookText,
 };
 const NO_FEEDBACK = new Set<Insight['kind']>(['brief', 'answer', 'recap']);
 
@@ -23,9 +24,9 @@ export function InsightCard({ insight, compact = false }: { insight: Insight; co
   return (
     <article className={`insight kind-${insight.kind}${feedback === 'dismissed' ? ' dismissed' : ''}`} aria-label={`${insight.kind} insight`}>
       <header className="insight-head" onClick={compact ? () => setOpen(!open) : undefined} style={compact ? { cursor: 'pointer' } : undefined}>
-        <span aria-hidden>{ICON[insight.kind]}</span>
+        <span className="ico" aria-hidden>{(() => { const I = ICON[insight.kind]; return <I size={14} />; })()}</span>
         <strong>{insight.title}</strong>
-        {insight.private && <span className="badge" title="Built from your private sources">🔒 Only you</span>}
+        {insight.private && <span className="pill ai" title="Built from your private sources"><Lock size={11} /> Only you</span>}
       </header>
       {open && (
         <>
@@ -38,8 +39,8 @@ export function InsightCard({ insight, compact = false }: { insight: Insight; co
           )}
           {canRate && (
             <div className="row" style={{ gap: 6, marginTop: 6 }}>
-              <button className="mini" aria-pressed={feedback === 'helpful'} onClick={() => rate('helpful')}>👍 Helpful</button>
-              <button className="mini" aria-pressed={feedback === 'dismissed'} onClick={() => rate('dismissed')}>👎 Dismiss</button>
+              <button className="mini" aria-pressed={feedback === 'helpful'} onClick={() => rate('helpful')}><ThumbsUp size={13} /> Helpful</button>
+              <button className="mini" aria-pressed={feedback === 'dismissed'} onClick={() => rate('dismissed')}><ThumbsDown size={13} /> Dismiss</button>
             </div>
           )}
           {error && <p className="error" role="alert">{error}</p>}

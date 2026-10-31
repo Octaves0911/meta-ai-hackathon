@@ -189,12 +189,12 @@
 .center-text { text-align: center; font-size: 12px; color: var(--text-3); }
 .ai-switch { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-size: 13.5px; font-weight: 600; color: var(--text); cursor: pointer; padding: 5px 10px 5px 8px; border-radius: 999px; border: 1px solid var(--border-strong); background: var(--surface); }
 .ai-switch.on { background: var(--ai-soft); border-color: color-mix(in srgb, var(--ai) 40%, transparent); color: var(--ai-text); }
-.toggle { appearance: none; width: 32px; height: 18px; border-radius: 999px; background: var(--border-strong); position: relative; transition: background 0.15s var(--ease); cursor: pointer; flex: none; }
+.toggle, input.toggle[type='checkbox'] { appearance: none; width: 32px; height: 18px; border-radius: 999px; background: var(--border-strong); position: relative; transition: background 0.15s var(--ease); cursor: pointer; flex: none; }
 .toggle::after { content: ''; position: absolute; left: 2px; top: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform 0.15s var(--ease); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); }
 .toggle:checked { background: var(--ai); }
 .toggle:checked::after { transform: translateX(14px); }
 .ai-working { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--text-2); padding: 6px 4px; }
-@media (max-width: 900px) { .room { grid-template-columns: 1fr; grid-template-rows: auto 56vh auto; height: auto; min-height: 100vh; } .side { border-left: 0; border-top: 1px solid var(--border); min-height: 56vh; } .self-tile { width: 120px; bottom: 88px; } .subtitles { right: 16px; bottom: 150px; } .extras { display: none; } }
+@media (max-width: 900px) { .room { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 56vh auto; height: auto; min-height: 100vh; } .room-header { flex-wrap: wrap; padding: 8px 12px; } .room-header .left { flex: 1 1 100%; } .room-header .left .pill:not(.live) { display: none; } .room-header .right { flex: 1 1 100%; justify-content: space-between; } .stage { min-width: 0; padding: 8px 8px 84px; } .note { max-width: calc(100% - 24px); text-align: center; } .controls { gap: 6px; padding: 6px; } .waiting { padding: 8px; } .page-head h1 { font-size: 23px; } .lp-nav { padding: 12px 16px; } .hero { padding-top: 48px; } .side { border-left: 0; border-top: 1px solid var(--border); min-height: 56vh; } .self-tile { width: 120px; bottom: 88px; } .subtitles { right: 16px; bottom: 150px; } .extras { display: none; } }
 
 /* ================= Insight cards ================= */
 .insight { position: relative; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; box-shadow: var(--shadow-sm); align-self: stretch; }
@@ -251,4 +251,6 @@
 .editor { width: 100%; min-height: 55vh; font-family: var(--mono); font-size: 13px; line-height: 1.6; resize: vertical; }
 .conn-card .head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
 .conn-logo { width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center; background: var(--surface-3); color: var(--text); flex: none; }
-@media (max-width: 860px) { .review-bar { left: 16px; } .app, .app.collapsed { grid-template-columns: 1fr; } .sidebar { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; } .nav { grid-auto-flow: column; } .sidebar .spacer, .project-switch label { display: none; } .ws { grid-template-columns: 1fr; } .page { padding: 18px; } .topbar { padding: 10px 18px; } }
+@media (max-width: 860px) { .collapse-btn { display: none; } .topbar { flex-wrap: wrap; } .topbar .crumbs { flex: 1 1 auto; min-width: 0; } .nav { overflow-x: auto; max-width: 100%; } .project-switch { flex: 1 1 140px; } .review-bar { left: 16px; } .app, .app.collapsed { grid-template-columns: 1fr; } .sidebar { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; } .nav { grid-auto-flow: column; } .sidebar .spacer, .project-switch label { display: none; } .ws { grid-template-columns: 1fr; } .page { padding: 18px; } .topbar { padding: 10px 18px; } }
+
+@media (max-width: 640px) { .btn-label { display: none; } .topbar { padding: 10px 14px; } .page { padding: 16px; } .meeting-row { grid-template-columns: minmax(0, 1fr) auto; } .meeting-row > svg { display: none; } .stat-card .stat { font-size: 24px; } }

@@ -53,13 +53,13 @@ export function Dashboard() {
     try { await api(`/projects/${project.id}`, { method: 'DELETE' }); toast.success('Project deleted'); await loadProjects(); } catch (e) { toast.error((e as Error).message); }
   };
 
-  const newMeetingBtn = <button className="primary" disabled={!project} onClick={() => setShowMeeting(true)}><Plus size={16} /> New meeting</button>;
+  const newMeetingBtn = <button className="primary" disabled={!project} onClick={() => setShowMeeting(true)}><Plus size={16} /> <span className="btn-label">New meeting</span></button>;
 
   return (
     <AppShell
       active={active} projects={projects ?? []} projectId={projectId} onProject={setProjectId}
       crumbs={<span>{project?.name ?? 'MeetPilot'}<span className="faint"> / </span><span style={{ color: 'var(--text)' }}>{PANEL_TITLE[active]}</span></span>}
-      actions={<><button onClick={() => setShowProject(true)}><FolderPlus size={16} /> New project</button>{newMeetingBtn}</>}
+      actions={<><button onClick={() => setShowProject(true)}><FolderPlus size={16} /> <span className="btn-label">New project</span></button>{newMeetingBtn}</>}
     >
       {projects === null ? <div className="stack"><Skeleton h={34} w={260} /><div className="grid"><Skeleton h={96} /><Skeleton h={96} /><Skeleton h={96} /><Skeleton h={96} /></div></div>
         : !project ? (
