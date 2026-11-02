@@ -49,9 +49,9 @@ class GatewayTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen["auth"], "Bearer k-test")
         body = seen["body"]
         self.assertEqual(body["model"], "muse-spark-1.3")
-        self.assertEqual(body["max_completion_tokens"], 50)
+        self.assertEqual(body["max_completion_tokens"], 50 + llm.REASONING_HEADROOM)
         self.assertNotIn("max_tokens", body)
-        self.assertNotIn("reasoning_effort", body)
+        self.assertEqual(body["reasoning_effort"], "minimal")
         self.assertEqual([m["role"] for m in body["messages"]], ["system", "user"])
         self.assertIn("untrusted_source", body["messages"][0]["content"])
 
@@ -94,6 +94,13 @@ class GatewayTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_persistent_failure_is_502(self):
         with stub(lambda req: httpx.Response(500)):
+            with self.assertRaises(HTTPException) as cm:
+                await llm.complete_text("s", "u")
+        self.assertEqual(cm.exception.status_code, 502)
+
+    async def test_empty_content_from_exhausted_budget_is_502(self):
+        empty = {"choices": [{"finish_reason": "length", "message": {"role": "assistant", "content": None}}]}
+        with stub(lambda req: httpx.Response(200, json=empty)):
             with self.assertRaises(HTTPException) as cm:
                 await llm.complete_text("s", "u")
         self.assertEqual(cm.exception.status_code, 502)

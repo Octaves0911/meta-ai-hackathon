@@ -9,6 +9,8 @@ from fastapi import HTTPException
 
 DEFAULT_URL = "https://api.meta.ai/v1/chat/completions"
 DEFAULT_MODEL = "muse-spark-1.3"  # Standard mode: content is not used for training. Override per environment with LLM_MODEL.
+REASONING_HEADROOM = 1500  # max_completion_tokens also counts hidden reasoning tokens; without headroom the answer can be cut to empty
+DEFAULT_EFFORT = "minimal"  # extraction/judging are shallow tasks; raise via LLM_REASONING_EFFORT for agents
 MAX_ATTEMPTS = 3  # 429 / 5xx are retried with exponential backoff + jitter, honouring Retry-After
 
 UNTRUSTED_NOTE = (
@@ -48,14 +50,13 @@ async def _call(system: str, user: str, max_tokens: int) -> str:
         raise HTTPException(status_code=503, detail="LLM_API_KEY is not configured")
     body: dict = {
         "model": os.environ.get("LLM_MODEL") or DEFAULT_MODEL,
-        "max_completion_tokens": max_tokens,
+        "max_completion_tokens": max_tokens + REASONING_HEADROOM,
         "messages": [
             {"role": "system", "content": f"{system}\n\n{UNTRUSTED_NOTE}"},
             {"role": "user", "content": user},
         ],
     }
-    if effort := os.environ.get("LLM_REASONING_EFFORT"):  # minimal | low | medium | high | xhigh
-        body["reasoning_effort"] = effort
+    body["reasoning_effort"] = os.environ.get("LLM_REASONING_EFFORT") or DEFAULT_EFFORT  # minimal | low | medium | high | xhigh
     headers = {"authorization": f"Bearer {key}", "content-type": "application/json"}
     url = os.environ.get("LLM_API_URL", DEFAULT_URL)
     try:
@@ -67,7 +68,10 @@ async def _call(system: str, user: str, max_tokens: int) -> str:
                     continue
                 res.raise_for_status()
                 break
-        return res.json()["choices"][0]["message"]["content"] or ""
+        choice = res.json()["choices"][0]
+        if not choice["message"].get("content"):
+            raise ValueError(f"empty completion (finish_reason={choice.get('finish_reason')})")
+        return choice["message"]["content"]
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"LLM provider failed: {type(e).__name__}") from e
     except (KeyError, IndexError, TypeError, ValueError) as e:
