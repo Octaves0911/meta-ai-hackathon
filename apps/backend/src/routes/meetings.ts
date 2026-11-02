@@ -186,6 +186,7 @@ export async function meetingRoutes(app: FastifyInstance) {
     const m = await loadMeeting(req.params.id, me);
     if (m.owner_id !== me.id) throw new HttpError(403, 'forbidden', 'only the owner can end the meeting');
     if (m.status !== 'active') throw new HttpError(409, 'not_active', 'meeting is not active');
+    await app.flushCaptions(m.id).catch((e) => app.log.error(e, 'caption flush failed')); // the last, unfinished sentence still counts
     await inTx(async (c) => {
       await flushSegment(c, m.id);
       await c.query("update meetings set status = 'ended', ended_at = now() where id = $1", [m.id]);
