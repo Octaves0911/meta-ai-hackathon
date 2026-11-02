@@ -8,6 +8,7 @@ import { Governor, PRIORITY } from './governor.js';
 import { toInsight } from './format.js';
 import { TASK_SELECT, toTask } from './tasksFormat.js';
 import { resolveDue, taskTitle, todayInTz } from '../services/due.js';
+import { heldTail } from './hold.js';
 import { createLlmClient, type LlmClient } from './llm.js';
 import { answerRules, extractRules, judgeRules } from './rules.js';
 import type { Candidate, EventDraft, InsightKind, TranscriptLine, Verdict } from './types.js';
@@ -24,6 +25,7 @@ const hash = (s: string) => createHash('md5').update(s).digest('hex').slice(0, 1
 export class InsightService {
   private governors = new Map<string, Governor<Queued>>();
   private cursors = new Map<string, number>();
+  private llmTries = new Map<string, number>();
   private busy = new Set<string>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private labels = new Map<string, string>();
@@ -54,7 +56,7 @@ export class InsightService {
   }
 
   /** One pass over a meeting. Safe to call concurrently (skipped if already running) and re-processing is idempotent. */
-  async process(m: MeetingRow) {
+  async process(m: MeetingRow, final = false) {
     if (this.busy.has(m.id)) return;
     this.busy.add(m.id);
     const t0 = performance.now();
@@ -62,13 +64,16 @@ export class InsightService {
       const cursor = this.cursors.get(m.id) ?? 0;
       const { rows } = await this.db.query(
         'select seq, speaker_name, text, user_id, created_at from transcript_segments where meeting_id = $1 and seq > $2 order by seq limit 40', [m.id, cursor]);
-      if (rows.length) {
-        const lines: TranscriptLine[] = rows.map((r) => ({ seq: r.seq, speaker: r.speaker_name, text: r.text, userId: r.user_id }));
+      const ready = final ? rows : heldTail(rows);
+      if (ready.length) {
+        const lines: TranscriptLine[] = ready.map((r) => ({ seq: r.seq, speaker: r.speaker_name, text: r.text, userId: r.user_id }));
         const { rows: earlierRows } = await this.db.query(
           'select seq, speaker_name, text from transcript_segments where meeting_id = $1 and seq <= $2 order by seq desc limit 10', [m.id, cursor]);
         const earlier = earlierRows.reverse().map((r) => ({ seq: r.seq, speaker: r.speaker_name, text: r.text }));
-        await this.handleLines(m, lines, earlier);
-        this.cursors.set(m.id, lines[lines.length - 1].seq);
+        if (await this.handleLines(m, lines, earlier, final)) {
+          this.llmTries.delete(m.id);
+          this.cursors.set(m.id, lines[lines.length - 1].seq);
+        }
       }
       await this.flushQueue(m.id);
     } finally {
@@ -78,14 +83,30 @@ export class InsightService {
   }
 
   /** Extract events from lines (LLM, else rules), attach the speaker, and handle each event. */
-  private async handleLines(m: MeetingRow, lines: TranscriptLine[], earlier: TranscriptLine[]) {
-    const events = (await this.llm.extract(lines, earlier)) ?? extractRules(lines);
+  /**
+   * Returns false when the batch should be retried next tick. A failed LLM call is transient (the model is configured),
+   * so we retry a few times before settling for the rules extractor, whose tasks are just clipped sentences.
+   */
+  private async handleLines(m: MeetingRow, lines: TranscriptLine[], earlier: TranscriptLine[], final = false): Promise<boolean> {
+    let events = await this.llm.extract(lines, earlier);
+    for (let i = 0; !events && final && this.llm.configured && i < 3; i++) {
+      await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
+      events = await this.llm.extract(lines, earlier);
+    }
+    if (!events && !final && this.llm.configured) {
+      const tries = (this.llmTries.get(m.id) ?? 0) + 1;
+      this.llmTries.set(m.id, tries);
+      if (tries < 4) return false;
+      this.app.log.warn({ meetingId: m.id }, 'LLM extraction kept failing; using rules for this batch');
+    }
+    events ??= extractRules(lines);
     for (const ev of events) {
       const line = lines.find((l) => l.seq === ev.fromSeq) ?? lines[0];
       ev.speaker = line?.speaker ?? null;
       ev.speakerId = line?.userId ?? null;
       await this.handleEvent(m, ev);
     }
+    return true;
   }
 
   /** Match a spoken name to a meeting participant or project member (case-insensitive username). */
@@ -109,9 +130,9 @@ export class InsightService {
     const assignee = await this.resolveUser(m, ev.who);
     const assigner = ev.speakerId ?? (await this.resolveUser(m, ev.speaker));
     const { rows } = await this.db.query(
-      `insert into tasks(meeting_id, project_id, title, description, assigned_to, assigned_by, due_date, event_id)
-       values ($1,$2,$3,$4,$5,$6,$7,$8) on conflict (event_id) where event_id is not null do nothing returning id`,
-      [m.id, m.project_id, taskTitle(ev.summary), ev.quote || ev.summary, assignee, assigner, due, eventId]);
+      `insert into tasks(meeting_id, project_id, title, description, assigned_to, assigned_by, due_date, event_id, priority)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9) on conflict (event_id) where event_id is not null do nothing returning id`,
+      [m.id, m.project_id, taskTitle(ev.summary), ev.details || ev.quote || ev.summary, assignee, assigner, due, eventId, ev.priority ?? null]);
     if (!rows[0]) return;
     this.app.analytics.track('task_created', {}, { projectId: m.project_id, meetingId: m.id });
     await this.emitTask(m.id, rows[0].id);
@@ -347,7 +368,7 @@ export class InsightService {
     if (!m) return;
     for (let i = 0; i < 50 && this.busy.has(m.id); i++) await new Promise((r) => setTimeout(r, 100)); // let an in-flight pass finish
     try {
-      await this.process(m);
+      await this.process(m, true);
     } catch (e) {
       this.app.log.error(e, 'final extraction failed');
     }

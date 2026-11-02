@@ -14,6 +14,8 @@ export interface EventDraft {
   dueText: string | null;
   referencesEarlier: boolean;
   quote: string;
+  details?: string;              // LLM-written task description (not a copy of the quote)
+  priority?: 'high' | 'medium' | 'low' | null;
   fromSeq: number;
   toSeq: number;
   speaker?: string | null;       // who said it (filled in by the pipeline from the transcript line)

@@ -4,16 +4,20 @@ import type { Candidate, EventDraft, TranscriptLine, Verdict } from './types.js'
 
 export class LlmClient {
   private downUntil = 0;
+  /** False once the AI service says it has no key (503); until then a failed call is treated as a transient error to retry. */
+  configured = true;
   constructor(private url: string, private secret: string, private mode: string = 'auto') {}
 
   private async post<T>(path: string, body: unknown): Promise<T | undefined> {
-    if (this.mode === 'off' || Date.now() < this.downUntil) return undefined;
+    if (this.mode === 'off') { this.configured = false; return undefined; }
+    if (Date.now() < this.downUntil) return undefined;
     try {
       const res = await fetch(`${this.url}${path}`, {
         method: 'POST', headers: { 'content-type': 'application/json', 'x-internal-secret': this.secret },
         body: JSON.stringify(body), signal: AbortSignal.timeout(50_000),
       });
-      if (!res.ok) { this.downUntil = Date.now() + (res.status === 503 ? 60_000 : 10_000); return undefined; }
+      if (!res.ok) { this.downUntil = res.status === 503 ? Date.now() + 60_000 : 0; this.configured = res.status !== 503; return undefined; }
+      this.configured = true;
       return (await res.json()) as T;
     } catch {
       this.downUntil = Date.now() + 10_000;
@@ -25,7 +29,7 @@ export class LlmClient {
     const r = await this.post<{ events: any[] }>('/extract', { lines, earlier, today: new Date().toISOString().slice(0, 10) });
     return r?.events.map((e) => ({
       type: e.type, entityKey: e.entity_key ?? null, value: e.value ?? null, summary: e.summary, who: e.who ?? null,
-      dueText: e.due_text ?? null, referencesEarlier: !!e.references_earlier, quote: e.quote ?? '', fromSeq: e.from_seq, toSeq: e.to_seq,
+      dueText: e.due_text ?? null, referencesEarlier: !!e.references_earlier, quote: e.quote ?? '', details: e.details || undefined, priority: e.priority ?? null, fromSeq: e.from_seq, toSeq: e.to_seq,
     }));
   }
 
