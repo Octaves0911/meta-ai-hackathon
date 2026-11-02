@@ -2,15 +2,21 @@ import type { FastifyInstance } from 'fastify';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { Events } from '@meetpilot/shared';
 import { saveSegment } from './services/captions.js';
+import { SentenceAssembler } from './services/sentences.js';
 import { DeepgramSession, MockSession, type SttSession, type SttState } from './services/sttSession.js';
 
 declare module 'fastify' {
-  interface FastifyInstance { closeCaptions: (meetingId: string) => void }
+  interface FastifyInstance {
+    closeCaptions: (meetingId: string) => void;
+    /** Save any unfinished sentence of every open caption stream; resolves once persisted (call before ending a meeting). */
+    flushCaptions: (meetingId: string) => Promise<void>;
+  }
 }
 
 // Close codes (docs/03 §2): 4001 not allowed / meeting closed, 4002 speech disabled or unconfigured.
 const CLOSE_DENIED = 4001;
 const CLOSE_STT_OFF = 4002;
+const SENTENCE_IDLE_MS = 3000; // an unfinished sentence is saved as-is after this much silence
 
 /**
  * `ws://…/stt?meetingId=&user=` — client streams 16 kHz mono PCM16 frames; server relays them to the STT provider,
@@ -19,7 +25,7 @@ const CLOSE_STT_OFF = 4002;
 export function attachStt(app: FastifyInstance) {
   const wss = new WebSocketServer({ noServer: true });
   const byMeeting = new Map<string, Set<WebSocket>>();
-
+  const flushers = new Map<WebSocket, () => Promise<void>>();
   app.server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url ?? '', 'http://localhost');
     if (url.pathname !== '/stt') return; // other paths (socket.io) are handled by their own listeners
@@ -61,14 +67,34 @@ export function attachStt(app: FastifyInstance) {
     const speaker = who.username;
     let chain = Promise.resolve(); // keep persistence + broadcast of finals in order
 
+    // Deepgram finals end at pauses, not sentences; save one segment per whole sentence (see services/sentences.ts).
+    const assembler = new SentenceAssembler();
+    let idle: ReturnType<typeof setTimeout> | null = null;
+    let lastConfidence = 0;
+    const persist = (text: string, confidence: number) => {
+      chain = chain.then(async () => {
+        const saved = await saveSegment(app.db, { meetingId, userId, speaker, text, confidence });
+        app.io.to(room).emit(Events.captionFinal, { meetingId, userId, speaker, text, ts: Date.now(), seq: saved.seq });
+      }).catch((e) => app.log.error(e, 'caption persist failed'));
+    };
+    const flushPending = () => {
+      if (idle) clearTimeout(idle);
+      idle = null;
+      for (const t of assembler.flush()) persist(t, lastConfidence);
+    };
+    ws.on('close', flushPending);
+    const flusher = async () => { flushPending(); await chain; };
+
     const handlers = {
       onResult: (r: { text: string; final: boolean; confidence: number }) => {
-        const base = { meetingId, userId, speaker, text: r.text, ts: Date.now() };
-        if (!r.final) return void app.io.to(room).emit(Events.captionInterim, base);
-        chain = chain.then(async () => {
-          const saved = await saveSegment(app.db, { meetingId, userId, speaker, text: r.text, confidence: r.confidence });
-          app.io.to(room).emit(Events.captionFinal, { ...base, seq: saved.seq });
-        }).catch((e) => app.log.error(e, 'caption persist failed'));
+        if (!r.final) {
+          const text = [assembler.buffered, r.text].filter(Boolean).join(' '); // keep the unfinished sentence on screen
+          return void app.io.to(room).emit(Events.captionInterim, { meetingId, userId, speaker, text, ts: Date.now() });
+        }
+        if (idle) clearTimeout(idle);
+        lastConfidence = r.confidence;
+        for (const sentence of assembler.push(r.text)) persist(sentence, r.confidence);
+        idle = assembler.buffered ? setTimeout(flushPending, SENTENCE_IDLE_MS) : null;
       },
       onStatus: (state: SttState) => {
         if (state === 'unavailable') app.analytics.track('captions_error', { reason: 'unavailable' }, { userId, meetingId });
@@ -83,10 +109,14 @@ export function attachStt(app: FastifyInstance) {
 
     const set = byMeeting.get(meetingId) ?? new Set();
     set.add(ws);
+    flushers.set(ws, flusher);
     byMeeting.set(meetingId, set);
-    ws.on('close', () => { set.delete(ws); if (!set.size) byMeeting.delete(meetingId); });
+    ws.on('close', () => { flushers.delete(ws); set.delete(ws); if (!set.size) byMeeting.delete(meetingId); });
   }
 
+  app.decorate('flushCaptions', async (meetingId: string) => {
+    await Promise.all([...(byMeeting.get(meetingId) ?? [])].map((ws) => flushers.get(ws)?.()));
+  });
   app.decorate('closeCaptions', (meetingId: string) => {
     for (const ws of byMeeting.get(meetingId) ?? []) ws.close(CLOSE_DENIED, 'meeting ended');
   });
