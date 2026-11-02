@@ -1,10 +1,10 @@
-import { AlertTriangle, BellRing, ClipboardList, Mail, MessageSquareQuote, NotebookText, SearchX, ThumbsDown, ThumbsUp, Lock, Lightbulb } from 'lucide-react';
+import { AlertTriangle, BellRing, History, RefreshCw, ClipboardList, Mail, MessageSquareQuote, NotebookText, SearchX, ThumbsDown, ThumbsUp, Lock, Lightbulb } from 'lucide-react';
 import { useState } from 'react';
 import type { Insight } from '@meetpilot/shared';
 import { api } from '../lib/api';
 
 const ICON: Record<Insight['kind'], typeof Lightbulb> = {
-  conflict: AlertTriangle, answer: MessageSquareQuote, reminder: BellRing, context: Lightbulb, no_record: SearchX, external: Mail, brief: ClipboardList, recap: NotebookText,
+  conflict: AlertTriangle, update: RefreshCw, repeat: History, answer: MessageSquareQuote, reminder: BellRing, context: Lightbulb, no_record: SearchX, external: Mail, brief: ClipboardList, recap: NotebookText,
 };
 const NO_FEEDBACK = new Set<Insight['kind']>(['brief', 'answer', 'recap']);
 

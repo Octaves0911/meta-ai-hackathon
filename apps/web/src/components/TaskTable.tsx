@@ -15,7 +15,7 @@ export function TaskTable({ tasks }: { tasks: Task[] }) {
           {tasks.map((t) => (
             <tr key={t.id}>
               <td><strong>{t.title}</strong></td><td className="muted" style={{ maxWidth: 260 }}>{t.description ?? '—'}</td>
-              <td>{who(t.assignedTo, 'Unassigned')}</td><td>{who(t.assignedBy)}</td>
+              <td>{t.assignedTo ? who(t.assignedTo) : t.assigneeName ? <span title="Named in the meeting but not a member of this project">{t.assigneeName} <span className="faint">(not in project)</span></span> : <span className="faint">Unassigned</span>}</td><td>{who(t.assignedBy)}</td>
               <td style={{ whiteSpace: 'nowrap' }}>{fmtDate(t.dueDate)}</td><td className="faint" style={{ whiteSpace: 'nowrap' }}>{new Date(t.createdAt).toLocaleDateString()}</td>
             </tr>
           ))}

@@ -32,7 +32,7 @@ export function TasksPanel({ tasks, counts, filter, setFilter, hasMore, loadMore
             </div>
             {t.description && <div className="muted task-desc">{t.description}</div>}
             <div className="row" style={{ marginTop: 10, flexWrap: 'wrap', gap: 8 }}>
-              {t.assignedTo ? <span className="pill accent" title="Assigned to"><Avatar name={t.assignedTo.username} size="sm" /> {t.assignedTo.username}</span> : <span className="pill">Unassigned</span>}
+              {t.assignedTo ? <span className="pill accent" title="Assigned to"><Avatar name={t.assignedTo.username} size="sm" /> {t.assignedTo.username}</span> : t.assigneeName ? <span className="pill" title="Named in the meeting but not a member of this project">{t.assigneeName} · not in project</span> : <span className="pill">Unassigned</span>}
               {t.dueDate && <span className="pill warn" title="Due date"><CalendarDays size={12} /> {fmtDate(t.dueDate)}</span>}
               {t.assignedBy && <span className="faint" style={{ fontSize: 12.5 }}>from {t.assignedBy.username}</span>}
             </div>

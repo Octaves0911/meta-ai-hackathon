@@ -15,9 +15,11 @@ export interface GovernorOptions {
 }
 
 const DEFAULT_THRESHOLDS: Record<InsightKind, number> = {
-  conflict: 0.5, reminder: 0.55, answer: 0.55, context: 0.65, external: 0.65, no_record: 0.7, brief: 0, recap: 0,
+  conflict: 0.5, update: 0.5, repeat: 0.5, reminder: 0.55, answer: 0.55, context: 0.65, external: 0.65, no_record: 0.7, brief: 0, recap: 0,
 };
-export const PRIORITY: InsightKind[] = ['conflict', 'reminder', 'answer', 'context', 'external', 'no_record', 'brief', 'recap'];
+/** Things said before and now changed or repeated: shown quickly and never counted against the chat cap. */
+export const RECALL: ReadonlySet<InsightKind> = new Set(['conflict', 'update', 'repeat']);
+export const PRIORITY: InsightKind[] = ['conflict', 'update', 'repeat', 'reminder', 'answer', 'context', 'external', 'no_record', 'brief', 'recap'];
 const WEAK = 0.3;
 const MIN_THRESHOLD = 0.35;
 const MAX_THRESHOLD = 0.9;
@@ -42,8 +44,8 @@ export class Governor<T extends Routable = Routable> {
     this.now = o.now ?? Date.now;
     this.maxChat = o.maxChat ?? Number(process.env.AI_GOVERNOR_MAX_CHAT ?? 6);
     this.windowMs = o.windowMs ?? Number(process.env.AI_GOVERNOR_WINDOW_MIN ?? 30) * 60_000;
-    this.cooldownMs = o.cooldownMs ?? 90_000;
-    this.conflictCooldownMs = o.conflictCooldownMs ?? 30_000;
+    this.cooldownMs = o.cooldownMs ?? 60_000;
+    this.conflictCooldownMs = o.conflictCooldownMs ?? 8_000;
     this.pauseMs = o.pauseMs ?? 8_000;
   }
 
@@ -69,7 +71,7 @@ export class Governor<T extends Routable = Routable> {
     if (this.shownTopics.has(c.topicKey) || c.evidenceIds.some((e) => this.shownEvidence.has(e))) return 'feed';
     if (c.score < this.thresholds[c.kind]) return 'feed';
     this.pruneWindow();
-    const isConflict = c.kind === 'conflict';
+    const isConflict = RECALL.has(c.kind);
     if (!isConflict && this.cards.length >= this.maxChat) return 'feed';
     const gap = isConflict ? this.conflictCooldownMs : this.cooldownMs;
     if (this.now() - this.lastCardAt >= gap) { this.recordShown(c); return 'interrupt'; }

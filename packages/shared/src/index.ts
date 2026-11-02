@@ -4,7 +4,7 @@ export const MeetingStatus = z.enum(['scheduled', 'active', 'ended', 'closed']);
 export type MeetingStatus = z.infer<typeof MeetingStatus>;
 
 export const InsightKind = z.enum([
-  'conflict', 'answer', 'reminder', 'context', 'no_record', 'external', 'brief', 'recap',
+  'conflict', 'update', 'repeat', 'answer', 'reminder', 'context', 'no_record', 'external', 'brief', 'recap',
 ]);
 export type InsightKind = z.infer<typeof InsightKind>;
 
@@ -134,6 +134,7 @@ export interface TaskUser { id: string; username: string }
 export interface Task {
   id: string; meetingId: string; title: string; description: string | null;
   assignedTo: TaskUser | null; assignedBy: TaskUser | null;
+  assigneeName?: string | null; // a person named aloud who is not a project member
   dueDate: string | null; status: TaskStatus; finalized: boolean; createdAt: string;
 }
 export const UpdateTaskBody = z.object({

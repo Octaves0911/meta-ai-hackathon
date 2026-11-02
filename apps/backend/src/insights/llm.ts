@@ -25,8 +25,8 @@ export class LlmClient {
     }
   }
 
-  async extract(lines: TranscriptLine[], earlier: TranscriptLine[]): Promise<EventDraft[] | undefined> {
-    const r = await this.post<{ events: any[] }>('/extract', { lines, earlier, today: new Date().toISOString().slice(0, 10) });
+  async extract(lines: TranscriptLine[], earlier: TranscriptLine[], knownKeys: string[] = []): Promise<EventDraft[] | undefined> {
+    const r = await this.post<{ events: any[] }>('/extract', { lines, earlier, today: new Date().toISOString().slice(0, 10), known_keys: knownKeys.slice(0, 40) });
     return r?.events.map((e) => ({
       type: e.type, entityKey: e.entity_key ?? null, value: e.value ?? null, summary: e.summary, who: e.who ?? null,
       dueText: e.due_text ?? null, referencesEarlier: !!e.references_earlier, quote: e.quote ?? '', details: e.details || undefined, priority: e.priority ?? null, fromSeq: e.from_seq, toSeq: e.to_seq,

@@ -8,5 +8,6 @@ export const toTask = (r: any): Task => ({
   id: r.id, meetingId: r.meeting_id, title: r.title, description: r.description,
   assignedTo: r.assigned_to ? { id: r.assigned_to, username: r.assignee_name } : null,
   assignedBy: r.assigned_by ? { id: r.assigned_by, username: r.assigner_name } : null,
+  assigneeName: r.spoken_assignee ?? null,
   dueDate: r.due, status: r.status, finalized: r.finalized, createdAt: r.created_at,
 });
