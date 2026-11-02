@@ -3,7 +3,7 @@ import json
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from llm import complete_json, sanitize_label
 
@@ -26,8 +26,16 @@ class Event(BaseModel):
     due_text: str | None = None
     references_earlier: bool = False
     quote: str = ""
+    details: str = ""  # tasks: 1-2 sentence description in the extractor's own words (what, why, context)
+    priority: str | None = None
     from_seq: int
     to_seq: int
+
+    @field_validator("priority", mode="before")
+    @classmethod
+    def _priority(cls, v):  # models sometimes say "urgent"/"normal"; never fail the whole batch over it
+        v = str(v).strip().lower() if v else None
+        return v if v in ("high", "medium", "low") else None
 
 
 class ExtractRequest(BaseModel):
@@ -85,8 +93,11 @@ def build_router(require_secret) -> APIRouter:
             "deadline set, question raised, blocker or important information shared. Ignore small talk. "
             "For decisions about a recurring fact use a snake_case entity_key (e.g. deployment_date) and put the new value in `value`. "
             "Set references_earlier=true when the speaker refers to an earlier meeting (\"as we discussed\"). "
-            "For a task put the person responsible in `who` (the speaker if they volunteer) and a short imperative title in `summary` (e.g. \"Send the pricing report\"), with any spoken deadline in `due_text`. Keep summaries under 160 characters and quotes under 240. "
-            'Return {"events":[{"type","entity_key","value","summary","who","due_text","references_earlier","quote","from_seq","to_seq"}]}. '
+            "Transcript lines are speech-to-text and may split a sentence across lines: join fragments before judging. "
+            "For a task put the person responsible in `who` (the speaker if they volunteer) and a short imperative title in `summary` (e.g. \"Send the pricing report\"), with any spoken deadline in `due_text`. "
+            "Never copy the speaker's sentence as the title. For a task also write `details`: one or two sentences, in your own words, saying what must be delivered, for whom and why or any stated constraint (do not repeat the title or the deadline), and `priority` (high, medium or low; high only if urgency or a blocker is stated). "
+            "Keep summaries under 160 characters and quotes under 240. "
+            'Return {"events":[{"type","entity_key","value","summary","who","due_text","references_earlier","quote","details","priority","from_seq","to_seq"}]}. '
             f"Today is {req.today}."
         )
         user = "Earlier context:\n<transcript>\n" + "\n".join(f"{l.speaker}: {l.text}" for l in req.earlier) + "\n</transcript>\n" \
