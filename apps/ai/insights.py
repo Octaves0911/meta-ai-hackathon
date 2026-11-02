@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from llm import complete_json, sanitize_label
 
 EventType = Literal["task", "decision", "deadline", "question", "blocker", "info"]
-Kind = Literal["conflict", "answer", "reminder", "context", "no_record", "external"]
+Kind = Literal["conflict", "update", "repeat", "answer", "reminder", "context", "no_record", "external"]
 
 
 class Line(BaseModel):
@@ -31,6 +31,11 @@ class Event(BaseModel):
     from_seq: int
     to_seq: int
 
+    @field_validator("details", "quote", mode="before")
+    @classmethod
+    def _text(cls, v):  # non-task events come back with null details/quote; that must not fail the whole batch
+        return "" if v is None else v
+
     @field_validator("priority", mode="before")
     @classmethod
     def _priority(cls, v):  # models sometimes say "urgent"/"normal"; never fail the whole batch over it
@@ -42,6 +47,7 @@ class ExtractRequest(BaseModel):
     lines: list[Line] = Field(min_length=1, max_length=40)
     earlier: list[Line] = Field(default_factory=list, max_length=10)
     today: str
+    known_keys: list[str] = Field(default_factory=list, max_length=40)  # decision keys already used in this project
 
 
 class ExtractResponse(BaseModel):
@@ -98,6 +104,8 @@ def build_router(require_secret) -> APIRouter:
             "Never copy the speaker's sentence as the title. For a task also write `details`: one or two sentences, in your own words, saying what must be delivered, for whom and why or any stated constraint (do not repeat the title or the deadline), and `priority` (high, medium or low; high only if urgency or a blocker is stated). "
             "Keep summaries under 160 characters and quotes under 240. "
             'Return {"events":[{"type","entity_key","value","summary","who","due_text","references_earlier","quote","details","priority","from_seq","to_seq"}]}. '
+            "Reuse an existing entity_key when a decision is about the same thing, even if worded differently: "
+            f"existing keys: {', '.join(sanitize_label(k, 60) for k in req.known_keys) or 'none'}. "
             f"Today is {req.today}."
         )
         user = "Earlier context:\n<transcript>\n" + "\n".join(f"{l.speaker}: {l.text}" for l in req.earlier) + "\n</transcript>\n" \
@@ -112,9 +120,12 @@ def build_router(require_secret) -> APIRouter:
     async def judge(req: JudgeRequest) -> JudgeResponse:
         system = (
             "You decide whether an AI meeting assistant should interrupt. Question to answer: 'would showing this change what people "
-            "say or decide right now?' Refuse vague topical overlap and restatements of what was just said. Use kind=conflict only when the "
-            "event contradicts a stored decision with the same entity_key; kind=no_record only when someone claims an earlier agreement "
-            "and no candidate supports it. The message is at most 2 sentences and must name its source. score is 0..1. "
+            "say or decide right now?' Candidates are things already said, decided or assigned, in this meeting (label 'this meeting') or in earlier ones. "
+            "Use kind=conflict when the event contradicts or changes something said before, e.g. a different launch date: state what was said before, by whom and where, and what it is now. "
+            "Use kind=update when a task that already exists is now given to a different person or gets a new deadline, or a fact is revised: name the previous owner or date. "
+            "Use kind=repeat when the same topic or task was already raised or assigned and nothing changed: say who raised it and where. "
+            "Prefer these three kinds whenever a candidate is about the same topic, even if the wording differs. Refuse vague topical overlap and restatements of what was just said by the same person a moment ago. "
+            "Use kind=no_record only when someone claims an earlier agreement and no candidate supports it. The message is at most 2 sentences and must name its source. score is 0..1. "
             'Return {"speak","kind","score","title","message","source_id","topic_key"}; source_id is the id of the candidate used.'
         )
         def tag(c: Candidate) -> str:

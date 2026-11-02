@@ -17,7 +17,7 @@ export function TasksTab({ tasks }: { tasks: Task[] }) {
           return (
             <tr key={t.id}>
               <td><strong>{t.title}</strong>{t.description && <div className="faint small">{t.description}</div>}</td>
-              <td>{t.assignedTo ? <span className="row" style={{ gap: 8 }}><Avatar name={t.assignedTo.username} size="sm" />{t.assignedTo.username}</span> : <span className="faint">Unassigned</span>}</td>
+              <td>{t.assignedTo ? <span className="row" style={{ gap: 8 }}><Avatar name={t.assignedTo.username} size="sm" />{t.assignedTo.username}</span> : t.assigneeName ? <span title="Named in the meeting but not a member of this project">{t.assigneeName} <span className="faint">(not in project)</span></span> : <span className="faint">Unassigned</span>}</td>
               <td>{t.assignedBy?.username ?? <span className="faint">—</span>}</td>
               <td style={{ whiteSpace: 'nowrap' }} className={late ? 'bad' : ''}>{fmtDate(t.dueDate)}{late ? ' · overdue' : ''}</td>
               <td><span className={`pill ${t.status === 'done' ? 'success' : late ? 'danger' : 'accent'}`}>{LABEL[t.status]}</span></td>

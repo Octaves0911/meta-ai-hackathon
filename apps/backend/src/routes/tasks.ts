@@ -56,7 +56,7 @@ export async function taskRoutes(app: FastifyInstance) {
       await c.query('begin');
       for (const [, [col, next, prev]] of Object.entries(cols)) {
         if (next === undefined || String(next ?? '') === String(prev ?? '')) continue;
-        await c.query(`update tasks set ${col} = $2 where id = $1`, [t.id, next]);
+        await c.query(`update tasks set ${col} = $2${col === 'assigned_to' ? ', spoken_assignee = null' : ''} where id = $1`, [t.id, next]); // a real assignee replaces the spoken name
         await c.query('insert into task_history(task_id, field, old, new) values ($1,$2,$3,$4)', [t.id, col, prev == null ? null : String(prev), next == null ? null : String(next)]);
       }
       await c.query('commit');

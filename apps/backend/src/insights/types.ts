@@ -1,4 +1,4 @@
-export type InsightKind = 'conflict' | 'answer' | 'reminder' | 'context' | 'no_record' | 'external' | 'brief' | 'recap';
+export type InsightKind = 'conflict' | 'update' | 'repeat' | 'answer' | 'reminder' | 'context' | 'no_record' | 'external' | 'brief' | 'recap';
 export type Tier = 'interrupt' | 'queued' | 'feed';
 export type EventType = 'task' | 'decision' | 'deadline' | 'question' | 'blocker' | 'info';
 

@@ -87,3 +87,18 @@ All external/third-party text is wrapped `<untrusted_source>…</untrusted_sourc
 
 ## 9. Test fixtures
 Golden scenario (PRD §F5): seed Meeting 1 decision `deployment_date = August 1`; replay Meeting 2 line "Let's ship on September 5" → expect exactly one `conflict` at tier `interrupt`, source "Meeting · …". Replays of "As we agreed last week, budget is 40k" with empty memory → one `no_record` at tier `feed`. Burst of 10 context-level insights in 30 min → ≤ 6 chat cards, rest in feed.
+
+## "Raised before" cards (conflict · update · repeat)
+Every event is compared with everything said or assigned earlier in the project, **including earlier lines of the same meeting**
+(`insights/recall.ts`): decisions, tasks (owner, due date, status) and deadline/blocker/info/question events, matched by shared
+`entity_key` or token similarity. The extractor is given the project's existing decision keys so "launch date" and "release date"
+land on one key.
+- **conflict**: a decision or statement changed (`Nov 20` → `Nov 25`); the card names the earlier value, who said it and where.
+- **update**: the same task now goes to someone else, or its deadline moved.
+- **repeat**: the same topic or task was already raised or assigned and nothing changed.
+
+A strong match with a concrete difference is delivered by rules immediately (no model round trip); everything else is judged by the
+model, with several judgements running in parallel. These kinds use a short 8 s gap and do not count against the 6-cards cap.
+A task that duplicates an open task with the same owner is not created twice; it is flagged as already assigned.
+Names are matched to members by exact username, first name, prefix or one-typo distance (`insights/people.ts`); a person who is not
+a member keeps the spoken name (`tasks.spoken_assignee`) instead of "Unassigned".

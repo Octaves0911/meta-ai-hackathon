@@ -146,7 +146,8 @@
 .insight { position: relative; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; box-shadow: var(--shadow-sm); align-self: stretch; }
 .insight::before { content: ''; position: absolute; left: 0; top: 12px; bottom: 12px; width: 3px; border-radius: 0 3px 3px 0; background: var(--text-3); }
 .insight.kind-conflict::before { background: var(--warn); }
-.insight.kind-answer::before { background: var(--accent); }
+.insight.kind-answer::before, .insight.kind-update::before { background: var(--accent); }
+.insight.kind-repeat::before { background: var(--ai); }
 .insight.kind-reminder::before { background: var(--ai); }
 .insight.kind-external::before { background: var(--success); }
 .insight.kind-brief::before, .insight.kind-recap::before { background: var(--ai); }
@@ -154,8 +155,8 @@
 .insight-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 14px; }
 .insight-head .ico { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; flex: none; background: var(--surface-3); color: var(--text-2); }
 .insight.kind-conflict .ico { background: var(--warn-soft); color: var(--warn-text); }
-.insight.kind-answer .ico { background: var(--accent-soft); color: var(--accent-text); }
-.insight.kind-reminder .ico, .insight.kind-brief .ico, .insight.kind-recap .ico { background: var(--ai-soft); color: var(--ai-text); }
+.insight.kind-answer .ico, .insight.kind-update .ico { background: var(--accent-soft); color: var(--accent-text); }
+.insight.kind-repeat .ico, .insight.kind-reminder .ico, .insight.kind-brief .ico, .insight.kind-recap .ico { background: var(--ai-soft); color: var(--ai-text); }
 .insight.kind-external .ico { background: var(--success-soft); color: var(--success-text); }
 .insight-quote { margin: 8px 0 4px; padding-left: 10px; border-left: 2px solid var(--border-strong); color: var(--text-2); font-style: italic; font-size: 13.5px; }
 .insight-body { white-space: pre-line; margin-top: 6px; overflow-wrap: anywhere; font-size: 14.5px; }

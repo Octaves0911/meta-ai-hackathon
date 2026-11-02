@@ -16,9 +16,28 @@ const EARLIER_RE = /\b(as we (?:agreed|discussed|decided)|as discussed|last (?:w
 
 export const normalizeValue = (v: string | null | undefined) => (v ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
 
+const MONTH_WORD = 'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?';
+const DAY_FIRST_RE = new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${MONTH_WORD})\\b`, 'i');
+const ORDINALS: Record<string, number> = {
+  first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10, eleventh: 11, twelfth: 12,
+  thirteenth: 13, fourteenth: 14, fifteenth: 15, sixteenth: 16, seventeenth: 17, eighteenth: 18, nineteenth: 19, twentieth: 20,
+  'twenty-first': 21, 'twenty-second': 22, 'twenty-third': 23, 'twenty-fourth': 24, 'twenty-fifth': 25, 'twenty-sixth': 26,
+  'twenty-seventh': 27, 'twenty-eighth': 28, 'twenty-ninth': 29, thirtieth: 30, 'thirty-first': 31,
+};
+const ORDINAL_RE = new RegExp(`\\b(?:the\\s+)?(${Object.keys(ORDINALS).join('|').replace(/-/g, '[- ]')})\\s+(?:of\\s+)?(${MONTH_WORD})\\b`, 'i');
+const monthName = (m: string) => MONTHS[m.slice(0, 3).toLowerCase()];
+
+/** "November 20", "Nov. 20th", "20th of November", "the twentieth of November" -> "November 20"; null when no calendar date is spoken. */
 export function parseDatePhrase(text: string): string | null {
+  const iso = /\b\d{4}-(\d{2})-(\d{2})\b/.exec(text); // the extractor sometimes normalises "November 25th" to 2026-11-25
+  if (iso && Number(iso[1]) >= 1 && Number(iso[1]) <= 12) return `${Object.values(MONTHS)[Number(iso[1]) - 1]} ${Number(iso[2])}`;
   const m = DATE_RE.exec(text);
-  return m ? `${MONTHS[m[1].slice(0, 3).toLowerCase()]} ${Number(m[2])}` : null;
+  if (m) return `${monthName(m[1])} ${Number(m[2])}`;
+  const d = DAY_FIRST_RE.exec(text);
+  if (d) return `${monthName(d[2])} ${Number(d[1])}`;
+  const o = ORDINAL_RE.exec(text);
+  if (o) return `${monthName(o[2])} ${ORDINALS[o[1].toLowerCase().replace(' ', '-')]}`;
+  return null;
 }
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);

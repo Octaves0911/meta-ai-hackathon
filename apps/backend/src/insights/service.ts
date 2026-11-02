@@ -7,8 +7,11 @@ import { searchExternal, searchMemory, type MemoryHit } from '../memory/search.j
 import { Governor, PRIORITY } from './governor.js';
 import { toInsight } from './format.js';
 import { TASK_SELECT, toTask } from './tasksFormat.js';
+import { jaccard, tokens } from '../analytics/compute.js';
 import { resolveDue, taskTitle, todayInTz } from '../services/due.js';
 import { heldTail } from './hold.js';
+import { isSelf, matchPerson, spokenName, type Person } from './people.js';
+import { findPriors, priorToCandidate, recallRules, type Prior } from './recall.js';
 import { createLlmClient, type LlmClient } from './llm.js';
 import { answerRules, extractRules, judgeRules } from './rules.js';
 import type { Candidate, EventDraft, InsightKind, TranscriptLine, Verdict } from './types.js';
@@ -22,6 +25,8 @@ const thresholds = () => (isReal() ? { answer: 0.75, reminder: 0.6 } : { answer:
 const hash = (s: string) => createHash('md5').update(s).digest('hex').slice(0, 16);
 
 /** Live assistant: extract -> retrieve -> judge -> govern -> deliver, plus brief, recap and `@ai` answers (docs/04). */
+const STRONG_MATCH = 0.6; // similarity above which a rules verdict is trusted without asking the model
+
 export class InsightService {
   private governors = new Map<string, Governor<Queued>>();
   private cursors = new Map<string, number>();
@@ -39,7 +44,7 @@ export class InsightService {
     return g;
   }
 
-  start(tickMs = Number(process.env.INSIGHT_TICK_MS ?? 5000)) {
+  start(tickMs = Number(process.env.INSIGHT_TICK_MS ?? 2000)) {
     this.timer = setInterval(() => void this.tick(), tickMs);
   }
   stop() { if (this.timer) clearInterval(this.timer); }
@@ -88,10 +93,12 @@ export class InsightService {
    * so we retry a few times before settling for the rules extractor, whose tasks are just clipped sentences.
    */
   private async handleLines(m: MeetingRow, lines: TranscriptLine[], earlier: TranscriptLine[], final = false): Promise<boolean> {
-    let events = await this.llm.extract(lines, earlier);
+    const { rows: keyRows } = await this.db.query('select distinct entity_key from decisions where project_id = $1 limit 40', [m.project_id]);
+    const keys = keyRows.map((r) => r.entity_key as string);
+    let events = await this.llm.extract(lines, earlier, keys);
     for (let i = 0; !events && final && this.llm.configured && i < 3; i++) {
       await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
-      events = await this.llm.extract(lines, earlier);
+      events = await this.llm.extract(lines, earlier, keys);
     }
     if (!events && !final && this.llm.configured) {
       const tries = (this.llmTries.get(m.id) ?? 0) + 1;
@@ -100,24 +107,29 @@ export class InsightService {
       this.app.log.warn({ meetingId: m.id }, 'LLM extraction kept failing; using rules for this batch');
     }
     events ??= extractRules(lines);
+    const deferred: Array<() => Promise<void>> = [];
     for (const ev of events) {
       const line = lines.find((l) => l.seq === ev.fromSeq) ?? lines[0];
       ev.speaker = line?.speaker ?? null;
       ev.speakerId = line?.userId ?? null;
-      await this.handleEvent(m, ev);
+      const later = await this.handleEvent(m, ev);
+      if (later) deferred.push(later);
     }
+    // Model round trips take seconds each: run them side by side instead of one after another.
+    await Promise.all(deferred.map((judge) => judge().catch((e) => this.app.log.error(e, 'judge failed'))));
     return true;
   }
 
-  /** Match a spoken name to a meeting participant or project member (case-insensitive username). */
-  private async resolveUser(m: MeetingRow, name: string | null | undefined): Promise<string | null> {
-    if (!name) return null;
+  /** Project members and meeting participants: the people a spoken name can refer to. */
+  private async people(m: MeetingRow): Promise<Person[]> {
     const { rows } = await this.db.query(
-      `select u.id from users u where lower(u.username) = lower($3) and (
-         exists (select 1 from project_members pm where pm.project_id = $1 and pm.user_id = u.id)
-         or exists (select 1 from meeting_participants p where p.meeting_id = $2 and p.user_id = u.id))`,
-      [m.project_id, m.id, name.trim()]);
-    return rows[0]?.id ?? null;
+      `select u.id, u.username from users u where exists (select 1 from project_members pm where pm.project_id = $1 and pm.user_id = u.id)
+         or exists (select 1 from meeting_participants p where p.meeting_id = $2 and p.user_id = u.id)`, [m.project_id, m.id]);
+    return rows;
+  }
+
+  private async resolveUser(m: MeetingRow, name: string | null | undefined): Promise<string | null> {
+    return matchPerson(name, await this.people(m))?.id ?? null;
   }
 
   /**
@@ -127,12 +139,20 @@ export class InsightService {
   private async createTask(m: MeetingRow, ev: EventDraft, eventId: string) {
     const today = todayInTz();
     const due = resolveDue(ev.dueText, today) ?? resolveDue(ev.quote, today);
-    const assignee = await this.resolveUser(m, ev.who);
     const assigner = ev.speakerId ?? (await this.resolveUser(m, ev.speaker));
+    // "I will…" is the speaker; a name that is not a member keeps its spoken form instead of becoming "Unassigned".
+    const assignee = isSelf(ev.who) ? assigner : await this.resolveUser(m, ev.who);
+    const assigneeName = !assignee && ev.who && !isSelf(ev.who) ? spokenName(ev.who) || null : null;
+    const title = taskTitle(ev.summary);
+    const { rows: open } = await this.db.query(
+      "select title, assigned_to, spoken_assignee from tasks where project_id = $1 and status <> 'done'", [m.project_id]);
+    const dup = open.some((t) => jaccard(tokens(t.title), tokens(title)) >= 0.6
+      && (t.assigned_to ?? t.spoken_assignee?.toLowerCase() ?? null) === (assignee ?? assigneeName?.toLowerCase() ?? null));
+    if (dup) return; // the same task for the same person is flagged as "already assigned" rather than duplicated
     const { rows } = await this.db.query(
-      `insert into tasks(meeting_id, project_id, title, description, assigned_to, assigned_by, due_date, event_id, priority)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9) on conflict (event_id) where event_id is not null do nothing returning id`,
-      [m.id, m.project_id, taskTitle(ev.summary), ev.details || ev.quote || ev.summary, assignee, assigner, due, eventId, ev.priority ?? null]);
+      `insert into tasks(meeting_id, project_id, title, description, assigned_to, assigned_by, due_date, event_id, priority, spoken_assignee)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) on conflict (event_id) where event_id is not null do nothing returning id`,
+      [m.id, m.project_id, title, ev.details || ev.quote || ev.summary, assignee, assigner, due, eventId, ev.priority ?? null, assigneeName]);
     if (!rows[0]) return;
     this.app.analytics.track('task_created', {}, { projectId: m.project_id, meetingId: m.id });
     await this.emitTask(m.id, rows[0].id);
@@ -178,16 +198,39 @@ export class InsightService {
     return label;
   }
 
+  /** Everything said or assigned earlier in this project, this meeting included, except the event being handled. */
+  private async priorPool(m: MeetingRow, eventId: string): Promise<Prior[]> {
+    const mine = (id: string | null) => id === m.id;
+    const [tasks, decisions, events] = await Promise.all([
+      this.db.query(
+        `select t.id, t.title, t.status, t.meeting_id, to_char(t.due_date, 'YYYY-MM-DD') as due, coalesce(u.username, t.spoken_assignee) as assignee, e.who
+         from tasks t left join users u on u.id = t.assigned_to left join knowledge_events e on e.id = t.event_id
+         where t.project_id = $1 and t.event_id is distinct from $2 order by t.created_at desc limit 200`, [m.project_id, eventId]),
+      this.db.query(
+        `select d.id, d.entity_key, d.value, d.meeting_id, e.summary, e.who from decisions d left join knowledge_events e on e.id = d.event_id
+         where d.project_id = $1 and d.event_id is distinct from $2 order by d.created_at desc limit 100`, [m.project_id, eventId]),
+      this.db.query(
+        `select id, type, summary, who, meeting_id from knowledge_events
+         where project_id = $1 and id <> $2 and type in ('deadline', 'blocker', 'info', 'question') order by created_at desc limit 200`, [m.project_id, eventId]),
+    ]);
+    const label = (id: string | null) => (mine(id) ? Promise.resolve('this meeting') : this.meetingLabel(id));
+    const pool: Prior[] = [];
+    for (const r of tasks.rows) pool.push({ id: r.id, kind: 'task', text: r.title, assignee: r.assignee, due: r.due, status: r.status, who: r.who, label: await label(r.meeting_id), sameMeeting: mine(r.meeting_id) });
+    for (const r of decisions.rows) pool.push({ id: r.id, kind: 'decision', text: r.summary ?? `${r.entity_key} = ${r.value}`, entityKey: r.entity_key, value: r.value, who: r.who, label: await label(r.meeting_id), sameMeeting: mine(r.meeting_id) });
+    for (const r of events.rows) pool.push({ id: r.id, kind: 'event', type: r.type, text: r.summary, who: r.who, label: await label(r.meeting_id), sameMeeting: mine(r.meeting_id) });
+    return pool;
+  }
+
   private async candidatesFor(m: MeetingRow, ev: EventDraft): Promise<Candidate[]> {
     const out = new Map<string, Candidate>();
     if (ev.entityKey) {
       const { rows } = await this.db.query(
         `select id, entity_key, value, meeting_id from decisions
-         where project_id = $1 and entity_key = $2 and meeting_id is distinct from $3 and superseded_by is null`,
-        [m.project_id, ev.entityKey, m.id]);
+         where project_id = $1 and entity_key = $2 and superseded_by is null`,
+        [m.project_id, ev.entityKey]);
       for (const r of rows) {
         out.set(r.id, { id: r.id, sourceType: 'decision', text: `Decision: ${r.entity_key} = ${r.value}`, score: 0.9,
-          label: await this.meetingLabel(r.meeting_id), entityKey: r.entity_key, value: r.value });
+          label: r.meeting_id === m.id ? 'this meeting' : await this.meetingLabel(r.meeting_id), entityKey: r.entity_key, value: r.value });
       }
     }
     const hits = await searchMemory(this.db, this.app.embedder, { projectId: m.project_id, query: `${ev.summary} ${ev.quote}`, excludeMeetingId: m.id, k: 6 });
@@ -228,8 +271,15 @@ export class InsightService {
     }
   }
 
-  private async handleEvent(m: MeetingRow, ev: EventDraft) {
+  /**
+   * Store the event, create its task and compare it with what was said before. Clear-cut changes (a different date, a task
+   * handed to someone else) are delivered immediately by rules; everything else returns a thunk that asks the model.
+   */
+  private async handleEvent(m: MeetingRow, ev: EventDraft): Promise<(() => Promise<void>) | undefined> {
     if (!m.ai_assist && ev.type !== 'task') return; // with AI off only commitments are tracked
+    // The extractor also sees earlier lines as context and can re-extract them worded differently; one line, one event per topic.
+    const { rows: sameLine } = await this.db.query('select summary from knowledge_events where meeting_id = $1 and type = $2 and segment_from_seq = $3', [m.id, ev.type, ev.fromSeq]);
+    if (sameLine.some((r) => jaccard(tokens(r.summary), tokens(ev.summary)) >= 0.6)) return;
     const { rows } = await this.db.query(
       `insert into knowledge_events(meeting_id, project_id, segment_from_seq, segment_to_seq, type, entity_key, summary, who, references_earlier, quote, summary_hash)
        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) on conflict (meeting_id, segment_from_seq, type, summary_hash) do nothing returning id`,
@@ -239,14 +289,28 @@ export class InsightService {
     if (ev.type === 'task') await this.createTask(m, ev, eventId);
     if (!m.ai_assist) return;
 
-    const cands = await this.candidatesFor(m, ev);
-    // undefined = LLM unavailable -> rules; null = the model decided to stay quiet (must not fall through to rules)
-    const llmVerdict = await this.llm.judge(ev, cands);
-    const verdict = llmVerdict === undefined ? judgeRules(ev, cands, thresholds()) : llmVerdict;
-    if (verdict?.speak) await this.deliver(m, verdict, verdict.private ? await this.privateAudience(m) : null);
-    await this.deliverPrivate(m, ev);
+    const priors = findPriors(ev, await this.priorPool(m, eventId));
+    const cands = [...(await this.candidatesFor(m, ev))];
+    for (const p of priors) if (!cands.some((c) => c.id === p.id)) cands.unshift(priorToCandidate(p));
 
-    // Record the decision after judging so it is compared against *earlier* meetings only.
+    // Fast path: a strong match on the same topic with a concrete difference needs no model to be worth saying.
+    const strong = priors[0] && (priors[0].sim >= STRONG_MATCH ? recallRules(ev, priors) : null);
+    let pending: (() => Promise<void>) | undefined;
+    if (strong && strong.kind !== 'repeat') {
+      await this.deliver(m, strong, null);
+    } else {
+      // Nothing to compare against and nothing asked: skip the model round trip (it would only say "stay quiet").
+      const needsJudge = cands.length > 0 || ev.type === 'question' || ev.referencesEarlier;
+      pending = async () => {
+        // undefined = LLM unavailable -> rules; null = the model decided to stay quiet (must not fall through to rules)
+        const llmVerdict = needsJudge ? await this.llm.judge(ev, cands) : null;
+        const verdict = llmVerdict === undefined ? (recallRules(ev, priors) ?? judgeRules(ev, cands, thresholds())) : llmVerdict;
+        if (verdict?.speak) await this.deliver(m, verdict, verdict.private ? await this.privateAudience(m) : null);
+        await this.deliverPrivate(m, ev);
+      };
+    }
+
+    // Record the decision after comparing so it is only ever compared against what came before it.
     if (ev.type === 'decision' && ev.entityKey && ev.value) {
       const { rows: d } = await this.db.query(
         'insert into decisions(project_id, entity_key, value, meeting_id, event_id) values ($1,$2,$3,$4,$5) returning id',
@@ -257,6 +321,7 @@ export class InsightService {
       await indexRecord(this.db, this.app.embedder, 'decision', d[0].id).catch((e) => this.app.log.error(e));
     }
     await indexRecord(this.db, this.app.embedder, 'event', eventId).catch((e) => this.app.log.error(e));
+    return pending;
   }
 
   private async deliver(m: MeetingRow, v: Verdict, audience: string | null = null) {
