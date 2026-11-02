@@ -86,7 +86,7 @@ Service-to-service calls carry `x-internal-secret`; backend and connector **fail
 | DB | Postgres + `pgvector` | One store for relational + semantic search; Docker one-liner |
 | ORM / migrations | Drizzle ORM + SQL migrations | Typed, explicit SQL |
 | AI service | FastAPI + Pydantic | Structured-output validation of LLM JSON |
-| LLM | Provider-agnostic gateway (default: Claude) | Judge, extractor and agents share one client with retries |
+| LLM | Meta Model API (Muse Spark; OpenAI-compatible Chat Completions) behind one gateway | Judge, extractor and agents share one client with retries |
 | Embeddings | 1536-dim; `EMBEDDING_PROVIDER=fake` (default) is a deterministic hashed bag-of-words embedder **inside the backend**; `real` calls the AI service `/embed` (any OpenAI-compatible endpoint) | Tests and demos run offline; fake vectors only capture word overlap, so enable real embeddings before relying on semantic search (see PRD risk table) |
 | Jobs | In-process interval workers + `jobs` table (at-least-once) | No Redis dependency at this scale |
 | Auth | Username only (header `x-user`) – documented limitation | Matches PRD non-goals |
@@ -161,7 +161,7 @@ meetpilot/
 | `DATABASE_URL` | backend, connector | Postgres |
 | `INTERNAL_SECRET` | all | service auth |
 | `DEEPGRAM_API_KEY`, `STT_MODE=stream\|async\|off` | backend | speech |
-| `LLM_API_KEY`, `LLM_MODEL`, `EMBEDDING_PROVIDER=real\|fake` | ai | models |
+| `LLM_API_KEY`, `LLM_MODEL`, `LLM_REASONING_EFFORT`, `EMBEDDING_PROVIDER=real\|fake` | ai | models |
 | `GOOGLE_CLIENT_ID/SECRET`, `TOKEN_ENC_KEY` (32 B) | connector | OAuth + vault |
 | `AI_GOVERNOR_MAX_CHAT=6`, `…_WINDOW_MIN=30` | backend | governor caps |
 

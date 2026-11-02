@@ -160,11 +160,14 @@ STT_MODE=stream
 DEEPGRAM_API_KEY=your-key
 ```
 
-**Real LLM for the assistant and agents** (Anthropic Messages API)
+**Real LLM for the assistant and agents** ([Meta Model API](https://dev.meta.ai/docs), Muse Spark)
 
 ```
-LLM_API_KEY=your-key
-LLM_MODEL=              # optional, default claude-sonnet-5-5
+LLM_API_KEY=your-meta-model-api-key
+LLM_MODEL=muse-spark-1.3-contributor   # development: cheapest, but Meta may train on prompts, so use demo data only
+# LLM_MODEL=muse-spark-1.3             # production: Standard mode, content is not used for training
+# LLM_MODEL=muse-wonder-1.0            # production, heaviest agent work (most capable, costs more)
+# LLM_REASONING_EFFORT=low             # optional: minimal | low | medium | high | xhigh
 ```
 
 Also delete the `AGENTS_MODE=mock` line so agents use the real model.
