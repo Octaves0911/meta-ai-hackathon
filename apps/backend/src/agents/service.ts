@@ -78,6 +78,39 @@ export class AgentService {
     if (rows[0]?.reviewer_id) this.app.emitToUser(rows[0].reviewer_id, 'execution:step', { id: executionId, revision, seq: s.seq, kind: s.kind, label: s.label, status: s.status });
   }
 
+  /** Text of what the agent produced at a revision (Markdown reports, email drafts): the starting point for a revision and context for chat. */
+  async currentOutput(executionId: string, revision: number): Promise<string> {
+    const { rows } = await this.db.query("select type, title, payload from execution_artifacts where execution_id = $1 and revision = $2 and type in ('markdown', 'email_draft', 'table') order by type, title", [executionId, revision]);
+    const parts = rows.map((a) => {
+      const p = a.payload ?? {};
+      if (a.type === 'markdown') return String(p.content ?? '');
+      if (a.type === 'email_draft') return `Subject: ${p.subject ?? ''}\nTo: ${(p.to ?? []).join(', ')}\n\n${p.body ?? ''}`;
+      return `${a.title ?? 'Table'}: ${JSON.stringify({ columns: p.columns, rows: p.rows })}`;
+    });
+    return parts.join('\n\n---\n\n').slice(0, 11_500);
+  }
+
+  async overCap(projectId: string): Promise<boolean> { const cap = dailyCapUsd(); return cap > 0 && (await this.spentToday(projectId)) >= cap; }
+
+  /** Chat usage counts toward the run's cost and so toward the project's daily cap. */
+  async addCost(executionId: string, usd: number) {
+    if (!(usd > 0)) return;
+    await this.db.query(
+      `update executions set usage = jsonb_set(coalesce(usage, '{}'::jsonb), '{cost_usd}', to_jsonb(round((coalesce((usage->>'cost_usd')::numeric, 0) + $2::numeric), 6))) where id = $1`, [executionId, usd]);
+  }
+
+  /** One live turn with the agent that produced the work. Throws when the AI service cannot answer. */
+  async chat(e: { id: string; task_id: string; project_id: string; meeting_id: string; reviewer_id: string; agent: string; title: string; description: string | null; due: string | null; assignee: string | null; revision: number },
+             message: string, history: { role: string; text: string }[]) {
+    const brief = await buildBrief(this.db, this.app.embedder, e);
+    const res = await fetch(`${aiUrl()}/agents/${e.agent}/chat`, {
+      method: 'POST', headers: headers(), signal: AbortSignal.timeout(60_000),
+      body: JSON.stringify({ ...brief, message, history, revision: e.revision, current_output: await this.currentOutput(e.id, e.revision) }),
+    });
+    if (!res.ok) throw new Error(`agent service responded ${res.status}`);
+    return (await res.json()) as { reply: string; kind: 'ask' | 'change' | 'clarify'; proposed_change: string; usage: { cost_usd?: number } };
+  }
+
   private async spentToday(projectId: string): Promise<number> {
     const { rows } = await this.db.query(
       `select coalesce(sum((e.usage->>'cost_usd')::numeric), 0)::float as usd from executions e join tasks t on t.id = e.task_id
@@ -115,7 +148,7 @@ export class AgentService {
     if (e.revision > 0) {
       const { rows: r } = await this.db.query(
         "select comment, line_comments from execution_reviews where execution_id = $1 and verdict = 'changes' order by created_at desc limit 1", [e.id]);
-      feedback = { comment: r[0]?.comment ?? null, line_comments: r[0]?.line_comments ?? [], previous_summary: e.summary };
+      feedback = { comment: r[0]?.comment ?? null, line_comments: r[0]?.line_comments ?? [], previous_summary: e.summary, previous_output: await this.currentOutput(e.id, e.revision - 1) };
     }
 
     await this.db.query('delete from execution_steps where execution_id = $1 and revision = $2', [e.id, e.revision]); // a retry starts a fresh trace

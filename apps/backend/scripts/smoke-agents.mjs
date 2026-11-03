@@ -64,7 +64,8 @@ ok('draft edited; recipients no longer missing', edited.status === 200 && edited
 // review rules
 ok('only the reviewer can review (owner is not enough)', (await api(`/executions/${research.id}/review`, 'rita', 'POST', { verdict: 'approve' })).status === 403);
 ok('request changes needs a comment', (await api(`/executions/${research.id}/review`, 'dev', 'POST', { verdict: 'changes' })).status === 400);
-for (let rev = 1; rev <= 3; rev++) {
+const MAX_REV = 5;
+for (let rev = 1; rev <= MAX_REV; rev++) {
   const r = await api(`/executions/${research.id}/review`, 'dev', 'POST', { verdict: 'changes', comment: `round ${rev}: add pricing` });
   ok(`request changes #${rev} accepted`, r.status === 204);
   const d = await waitFor(async () => { const x = (await api(`/executions/${research.id}`, 'dev')).body; return x.status === 'awaiting_review' && x.revision === rev && x; });
@@ -73,7 +74,7 @@ for (let rev = 1; rev <= 3; rev++) {
 }
 const afterRevs = (await api(`/executions/${research.id}`, 'dev')).body;
 ok('collaboration log is per revision (no duplicates)', new Set(afterRevs.consultations.map((c) => `${c.fromAgent}>${c.toAgent}>${c.question}`)).size === afterRevs.consultations.length, afterRevs.consultations);
-ok('4th change request refused (max 3 revisions)', (await api(`/executions/${research.id}/review`, 'dev', 'POST', { verdict: 'changes', comment: 'again' })).status === 409);
+ok(`change request #${MAX_REV + 1} refused (max ${MAX_REV} revisions)`, (await api(`/executions/${research.id}/review`, 'dev', 'POST', { verdict: 'changes', comment: 'again' })).status === 409);
 ok('approve completes the task', (await api(`/executions/${research.id}/review`, 'dev', 'POST', { verdict: 'approve' })).status === 204
   && (await db.query("select 1 from tasks where id=$1 and status='done'", [research.task_id])).rowCount === 1);
 ok('cannot review twice', (await api(`/executions/${research.id}/review`, 'dev', 'POST', { verdict: 'approve' })).status === 409);
@@ -114,6 +115,33 @@ const rej = (await api(`/executions/${ex}`, 'dev')).body;
 ok('rejected: status, reason in history, no longer reviewable', rej.status === 'rejected' && rej.reviews.at(-1).verdict === 'reject' && rej.reviews.at(-1).comment === 'Wrong market entirely' && rej.canReview === false, rej.status);
 ok('rejecting hands the task back to a person (open)', (await db.query("select 1 from tasks where id=$1 and status='open'", [t])).rowCount === 1);
 ok('rejected work shows under failed/rejected, and cannot be reviewed again', (await api('/reviews?group=problem', 'dev')).body.some((x) => x.id === ex) && (await api(`/executions/${ex}/review`, 'dev', 'POST', { verdict: 'approve' })).status === 409);
+
+// live chat with the agent, then Apply & rerun
+const t2 = (await db.query("insert into tasks(meeting_id, project_id, title, description, finalized, assigned_to) values ($1,$2,'Research the market', 'Dev will research the market', true, $3) returning id", [M, P.id, id('dev')])).rows[0].id;
+const ex2 = (await db.query("insert into executions(task_id, agent, status, reviewer_id, error) values ($1,'research','failed',$2,'boom') returning id", [t2, id('dev')])).rows[0].id;
+await api(`/executions/${ex2}/retry`, 'dev', 'POST');
+await waitFor(async () => (await api(`/executions/${ex2}`, 'dev')).body.status === 'awaiting_review');
+ok('chat starts empty', (await api(`/executions/${ex2}/messages`, 'dev')).body.length === 0);
+ok('only the reviewer can talk to the agent', (await api(`/executions/${ex2}/messages`, 'rita', 'POST', { text: 'hi there friend' })).status === 403);
+ok('empty and oversized messages are refused', (await api(`/executions/${ex2}/messages`, 'dev', 'POST', { text: '   ' })).status === 400 && (await api(`/executions/${ex2}/messages`, 'dev', 'POST', { text: 'x'.repeat(2001) })).status === 400);
+const q = await api(`/executions/${ex2}/messages`, 'dev', 'POST', { text: 'Where does this come from?' });
+ok('a question gets an answer and changes nothing', q.status === 201 && q.body.length === 2 && q.body[0].role === 'user' && q.body[1].role === 'agent' && q.body[1].kind === 'ask' && q.body[1].proposedChange === null, q.body);
+ok('rerun with nothing to change is refused', (await api(`/executions/${ex2}/rerun`, 'dev', 'POST', {})).status === 400);
+const ch = await api(`/executions/${ex2}/messages`, 'dev', 'POST', { text: 'Add a section about pricing tiers' });
+ok('a change request gets a stated plan', ch.status === 201 && ch.body[1].kind === 'change' && /pricing tiers/.test(ch.body[1].proposedChange ?? ''), ch.body);
+ok('the owner can read the conversation but not rerun', (await api(`/executions/${ex2}/messages`, 'rita')).body.length === 4 && (await api(`/executions/${ex2}/rerun`, 'rita', 'POST', {})).status === 403);
+ok('conversation is private to people on the task', (await api(`/executions/${ex2}/messages`, 'mallory')).status === 404);
+const spend0 = (await db.query("select coalesce((usage->>'cost_usd')::numeric,0) c from executions where id=$1", [ex2])).rows[0].c;
+const rr = await api(`/executions/${ex2}/rerun`, 'dev', 'POST', { comment: 'Keep it under one page.' });
+ok('Apply & rerun accepted', rr.status === 202, rr);
+const rerun = await waitFor(async () => { const x = (await api(`/executions/${ex2}`, 'dev')).body; return x.status === 'awaiting_review' && x.revision === 1 && x; });
+const md2 = rerun?.artifacts.find((a) => a.type === 'markdown')?.payload.content ?? '';
+ok('the agent redid the work with the chat request and the note', !!rerun && md2.includes('Add a section about pricing tiers') && md2.includes('Keep it under one page.'), md2.slice(0, 300));
+ok('rerun is recorded as a changes review with the compiled request', rerun.reviews.some((r) => r.verdict === 'changes' && /Changes requested in chat/.test(r.comment)), rerun.reviews);
+const old = (await api(`/executions/${ex2}?revision=0`, 'dev')).body;
+ok('an earlier revision can be fetched for comparison', old.artifacts.length > 0 && !old.artifacts.find((a) => a.type === 'markdown').payload.content.includes('Keep it under one page.') && old.revision === 1, old.artifacts.map((a) => a.type));
+ok('the next rerun does not replay the old request', (await api(`/executions/${ex2}/rerun`, 'dev', 'POST', {})).status === 400);
+ok('chat is closed while the agent is working or after approval', (await api(`/executions/${ex2}/review`, 'dev', 'POST', { verdict: 'approve' })).status === 204 && (await api(`/executions/${ex2}/messages`, 'dev', 'POST', { text: 'one more thing please' })).status === 409);
 
 for (const u of U) await api(`/users/${id(u)}`, u, 'DELETE');
 await db.end();
