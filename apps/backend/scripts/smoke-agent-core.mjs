@@ -62,9 +62,10 @@ ok('step endpoint rejects a wrong secret', bad.status === 401, bad);
 const plants = await waitFor(async () => (await db.query(`select e.id, e.status, e.reviewer_id from executions e join tasks t on t.id = e.task_id where t.meeting_id = $1 and e.status = 'skipped_human'`, [M])).rows[0], 15000);
 ok('"water the plants" is left for a human', !!plants);
 if (plants) {
-  const stranger = await api(`/api/executions/${plants.id}/run-with`, 'core_omar', 'POST', { agent: 'research' });
   const reviewerName = (await db.query('select username from users where id=$1', [plants.reviewer_id])).rows[0].username;
-  ok('only the reviewer may override', [403, 404].includes(stranger.status) || reviewerName === 'core_omar', stranger);
+  const notReviewer = U.find((u) => u !== reviewerName); // whoever the extractor assigned the task to, the other person must be refused
+  const stranger = await api(`/api/executions/${plants.id}/run-with`, notReviewer, 'POST', { agent: 'research' });
+  ok('only the reviewer may override', [403, 404].includes(stranger.status), stranger);
   const run = await api(`/api/executions/${plants.id}/run-with`, reviewerName, 'POST', { agent: 'research' });
   ok('reviewer can run a specialist anyway', run.status === 202, run);
   const again = await api(`/api/executions/${plants.id}/run-with`, reviewerName, 'POST', { agent: 'research' });
@@ -74,21 +75,42 @@ if (plants) {
 }
 
 // Research uses the web (real search) and never the project's private terms; the owner's switch turns the web off.
-const runResearch = async (title, description) => {
+const runAgent = async (agent, title, description) => {
   const t = (await db.query("insert into tasks(meeting_id, project_id, title, description, finalized, assigned_to) values ($1,$2,$3,$4,true,$5) returning id", [M, P.id, title, description, id('core_priya')])).rows[0].id;
-  const x = (await db.query("insert into executions(task_id, agent, status, reviewer_id, error) values ($1,'research','failed',$2,'x') returning id", [t, id('core_priya')])).rows[0].id;
+  const x = (await db.query("insert into executions(task_id, agent, status, reviewer_id, error) values ($1,$3,'failed',$2,'x') returning id", [t, id('core_priya'), agent])).rows[0].id;
   await api(`/api/executions/${x}/retry`, 'core_priya', 'POST');
   return waitFor(async () => { const d = (await api(`/api/executions/${x}`, 'core_priya')).body; return ['awaiting_review', 'failed'].includes(d.status) && d; }, 170000);
 };
-const on = await runResearch('Compare Slack and Microsoft Teams pricing', 'Compare the paid pricing of Slack and Microsoft Teams');
+const on = await runAgent('research', 'Compare Slack and Microsoft Teams pricing', 'Compare the paid pricing of Slack and Microsoft Teams');
 ok('research searched the web and listed verified sources', on?.status === 'awaiting_review' && on.usage?.searches >= 1 && on.artifacts.some((x) => x.type === 'link' && x.payload.items?.length >= 1), { status: on?.status, searches: on?.usage?.searches, types: on?.artifacts.map((x) => x.type), q: on?.openQuestions });
 ok('sources are web pages and the report names the search date', !!on && on.artifacts.filter((x) => x.type === 'link').every((x) => x.payload.items.every((i) => /^https?:\/\//.test(i.url))) && /searched on \d{4}-\d{2}-\d{2}/.test(on.artifacts.find((x) => x.type === 'markdown').payload.content), on?.artifacts.map((x) => x.title));
 ok('search cost is part of the run cost and confidence is recorded', on?.usage?.costUsd > 0 && typeof on.confidence === 'number', on?.usage);
 const hasSteps = on?.steps.some((x) => x.kind === 'search' && x.status === 'done');
 ok('the trace shows the search step', !!hasSteps, on?.steps.map((x) => `${x.kind}:${x.status}`));
 await api(`/api/projects/${P.id}/settings`, 'core_priya', 'PATCH', { noExternalLookups: true });
-const off = await runResearch('Compare Slack and Microsoft Teams pricing again', 'Compare the paid pricing of Slack and Microsoft Teams');
+const off = await runAgent('research', 'Compare Slack and Microsoft Teams pricing again', 'Compare the paid pricing of Slack and Microsoft Teams');
 ok('with external lookups off there is no web search and the report says so', off?.status === 'awaiting_review' && !(off.usage?.searches > 0) && !off.artifacts.some((x) => x.type === 'link') && /No web search was used/.test(off.artifacts.find((x) => x.type === 'markdown').payload.content) && off.openQuestions.some((q) => /off for this project/.test(q)), { status: off?.status, searches: off?.usage?.searches, q: off?.openQuestions });
+
+// Marketing: dates are counted back from the CURRENT launch decision, owners are real people, the brand note is followed, no budget is invented.
+await api(`/api/projects/${P.id}/settings`, 'core_priya', 'PATCH', { noExternalLookups: false, brandNote: "Friendly and plain. Say 'teams', never 'users'. No exclamation marks." });
+const oldD = (await db.query("insert into decisions(project_id, entity_key, value, meeting_id) values ($1,'launch date','November 15',$2) returning id", [P.id, M])).rows[0].id;
+const newD = (await db.query("insert into decisions(project_id, entity_key, value, meeting_id) values ($1,'launch date','November 22',$2) returning id", [P.id, M])).rows[0].id;
+await db.query('update decisions set superseded_by = $1 where id = $2', [newD, oldD]);
+await db.query("insert into decisions(project_id, entity_key, value, meeting_id) values ($1,'pro plan price','$49 per month',$2)", [P.id, M]);
+const mkt = await runAgent('marketing', 'Plan the Pro launch campaign', 'Plan the launch campaign for the Pro plan');
+const plan = mkt?.artifacts.find((x) => x.title === 'Marketing plan')?.payload.content ?? '';
+const rows = mkt?.artifacts.find((x) => x.type === 'table')?.payload.rows ?? [];
+ok('marketing delivered a plan, a timeline table and a PDF', mkt?.status === 'awaiting_review' && !!plan && rows.length >= 2 && mkt.artifacts.some((x) => x.type === 'pdf'), { status: mkt?.status, types: mkt?.artifacts.map((x) => x.type) });
+const endDays = rows.map((r) => new Date(`${r[2]} 12:00`)).filter((d) => !isNaN(d));
+const lastEnd = endDays.length ? new Date(Math.max(...endDays)) : null;
+ok('the timeline ends on the CURRENT launch date (Nov 22), counted back from it, not from the old 15th', !!lastEnd && lastEnd.getMonth() === 10 && lastEnd.getDate() === 22 && !rows.some((r) => /launch/i.test(r[0]) && /Nov 15/.test(`${r[1]} ${r[2]}`)), rows);
+ok('every owner is a real person from the meeting or Unassigned', rows.every((r) => ['core_priya', 'core_omar', 'Unassigned'].includes(r[3])), rows.map((r) => r[3]));
+ok('the brand note is followed (teams not users, no exclamation marks)', !/\busers?\b/i.test(plan) && !plan.includes('!'), plan.slice(0, 400));
+ok('no budget is invented and the plan says so', /No budget was discussed/.test(plan) && mkt.openQuestions.some((q) => /budget/i.test(q)), mkt?.openQuestions);
+ok('marketing confidence is recorded and the trace has the fit check', typeof mkt?.confidence === 'number' && mkt.steps.some((x) => x.kind === 'check' && /fits before launch/i.test(x.label)), mkt?.steps.map((x) => x.label));
+const copy = await runAgent('marketing', 'Write the launch press release', 'Write the press release for the Pro launch');
+const copyMd = copy?.artifacts.find((x) => x.type === 'markdown')?.payload.content ?? '';
+ok('a copy task delivers the text itself, not a plan or timeline', copy?.status === 'awaiting_review' && /release/i.test(copyMd) && !copy.artifacts.some((x) => x.type === 'table') && !/## Timeline/.test(copyMd), copy?.artifacts.map((x) => x.title));
 
 await db.query('delete from projects where id = $1', [P.id]);
 await db.query('delete from users where username = any($1)', [U]);

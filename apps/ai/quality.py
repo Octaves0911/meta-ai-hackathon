@@ -43,7 +43,7 @@ def _clamp(v) -> float:
         return 0.5
 
 
-async def self_check(agent: str, brief: str, deliverable: str, *, model: str | None = None) -> Check:
+async def self_check(agent: str, brief: str, deliverable: str, *, model: str | None = None, note: str = "") -> Check:
     """Structured critique. A check that itself fails must not take the run down: it degrades to 'unchecked' (confidence 0.5)."""
     try:
         data = await chat_json(
@@ -51,7 +51,7 @@ async def self_check(agent: str, brief: str, deliverable: str, *, model: str | N
             "`blocking` lists concrete defects that must be fixed (wrong or unsupported facts, ignored decisions, placeholders, invented data); "
             "leave it empty if the work is acceptable. `open_questions` lists things a human must confirm or supply. "
             "`confidence` is 0..1 for how ready this is to hand to the user. Be terse.",
-            f"Rubric: {RUBRIC.get(agent, 'Is it correct, complete and grounded in the brief?')}\n\nBrief:\n{brief[:9000]}\n\nDeliverable:\n{deliverable[:9000]}",
+            f"Rubric: {RUBRIC.get(agent, 'Is it correct, complete and grounded in the brief?')}{(chr(10) + 'Reviewer note: ' + note) if note else ''}\n\nBrief:\n{brief[:9000]}\n\nDeliverable:\n{deliverable[:9000]}",
             CHECK_SCHEMA, max_tokens=600, model=model)
         return Check(confidence=_clamp(data.get("confidence")), blocking=[str(x)[:300] for x in data.get("blocking", [])][:6],
                      open_questions=[str(x)[:300] for x in data.get("open_questions", [])][:6])

@@ -64,8 +64,11 @@ export interface Project {
   shareWorkspace: boolean; role: 'owner' | 'member'; createdAt: string;
   /** Agents never search the web for this project (owner setting). */
   noExternalLookups: boolean;
+  /** Owner-written brand and voice note (≤1,500 chars) that Marketing, Communication and Designer always see. */
+  brandNote: string | null;
 }
-export const ProjectSettingsBody = z.object({ noExternalLookups: z.boolean().optional() });
+export const MAX_BRAND_NOTE = 1500;
+export const ProjectSettingsBody = z.object({ noExternalLookups: z.boolean().optional(), brandNote: z.string().max(MAX_BRAND_NOTE).nullable().optional() });
 export interface ProjectOverview {
   meetings: number; thisWeek: number; avgDurationSec: number; activeNow: number;
   byStatus: Record<MeetingStatus, number>;

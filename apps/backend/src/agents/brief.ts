@@ -21,6 +21,8 @@ export interface BriefBody {
   prior_work: { title: string; agent: string; summary: string }[];
   /** false when the project's owner switched external lookups off. */
   allow_web: boolean;
+  /** The project owner's brand and voice note. */
+  brand_note: string | null;
   /** Deliverables of other work an email draft could attach (communication only). */
   files: { id: string; title: string; agent: string; state: string }[];
 }
@@ -72,7 +74,7 @@ export async function buildBrief(db: Pool, embedder: Embedder, e: {
               where t.meeting_id = $1 and t.id <> $2 and t.finalized order by t.created_at limit 10`, [e.meeting_id, e.task_id]),
     db.query(`select t.title, x.agent, x.summary from executions x join tasks t on t.id = x.task_id
               where t.project_id = $1 and x.status = 'approved' and x.task_id <> $2 order by x.updated_at desc limit 25`, [e.project_id, e.task_id]),
-    db.query('select no_external_lookups from projects where id = $1', [e.project_id]),
+    db.query('select no_external_lookups, brand_note from projects where id = $1', [e.project_id]),
   ]);
   const t = task.rows[0] ?? {};
   const keys = decisions.rows.map((d) => d.entity_key);
@@ -106,6 +108,7 @@ export async function buildBrief(db: Pool, embedder: Embedder, e: {
     neighbours: neighbours.rows.map((r) => ({ title: r.title, assignee: r.assignee, status: r.status })),
     prior_work: rankPriorWork(approved.rows, e.title, e.agent ?? '').map((r) => ({ title: r.title, agent: r.agent, summary: String(r.summary ?? '').slice(0, 600) })),
     allow_web: !(project.rows[0]?.no_external_lookups ?? false),
+    brand_note: project.rows[0]?.brand_note ?? null,
     files: e.agent === 'communication'
       ? (await candidatesFor(db, { id: e.id, project_id: e.project_id, meeting_id: e.meeting_id })).slice(0, 12).map((c) => ({ id: c.executionId, title: c.taskTitle, agent: c.agent ?? '', state: c.state }))
       : [],
