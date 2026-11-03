@@ -98,7 +98,11 @@ Some tasks need more than one agent in sequence. A **consultation** (existing) i
 | "Write the press release and send it to the press list" | Marketing → (approve) → Communication (draft; the *send* is still a separate human click) |
 | "Design the landing page, just a mockup" / "only the design" | Designer only (explicit wording wins) |
 
-If unsure whether a design should be built, the router chooses single-stage and shows a **"Also build it with Code"** button on the approved design (the same hand-off, started by the human). Regex rules veto obvious cases; the model decides the rest; the plan and reason are shown on the task.
+**Designer → Code is allowed only for web-page work (hard rule).** The Code stage is planned only when the task or the meeting context is about a web page or site: landing page, website, web page, web app screen, dashboard UI, homepage, signup/pricing page, "implement/build the page". Cards, banners, posters, social graphics, logos, templates, brand/print designs, slides and generic mockups or wireframes **never** hand off to Code, and the output of the Designer is not passed to the Code agent for them.
+- Detection: regex veto list for non-web artefacts + a model check with the meeting context ("is a web page being designed?"), recorded with its reason on the task.
+- Web-related but the wording says "only the mockup / just the design", or the router is unsure: single-stage; the approved design then shows an **"Also build it with Code"** button, shown **only for web-page designs**, started by the human.
+- A Designer result for a non-web task offers no Code hand-off or button at all.
+Regex rules veto obvious cases; the model decides the rest; the plan and reason are shown on the task.
 
 **Flow** (each stage is an ordinary execution with its own run, trace, review and revisions ≤ 3):
 1. Stage 1 runs → *awaiting review*.
@@ -218,4 +222,5 @@ Header: agent · status · **Confidence** · cost · revision. Top card: **Needs
 9. ✅ **Pending attachments**: progress shown live in the email review box; Send disabled until ticked attachments are ready.
 10. ✅ **Max total attachment size**: 10 MB.
 11. ✅ **Multi-stage tasks**: hand-offs with an approval gate at every stage; website/landing page → Designer → Code; card/banner/template → Designer only (§1.9).
+11b. ✅ Designer output goes to Code **only** for web-page design tasks (§1.9).
 12. **Still open**: Designer PDF from mockups (optional headless browser vs simple drawing), Fireworks in the first pass, Code ceiling (patch / bundle), deployment models, auto-run policy, spend cap.
