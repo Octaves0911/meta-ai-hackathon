@@ -24,9 +24,11 @@ def require_secret(x_internal_secret: str | None = Header(default=None)) -> None
 
 from agents import build_router as build_agents_router  # noqa: E402  (need require_secret defined above)
 from insights import build_router  # noqa: E402
+from router import build_router as build_route_router  # noqa: E402
 
 app.include_router(build_router(require_secret))
 app.include_router(build_agents_router(require_secret))
+app.include_router(build_route_router(require_secret))
 
 
 @app.get("/health")

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { createHash } from 'node:crypto';
-import { EmailDraftBody, MAX_REVISIONS, ReviewBody, SendEmailBody, type ExecutionDetail, type ExecutionSummary } from '@meetpilot/shared';
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { EmailDraftBody, MAX_REVISIONS, ReviewBody, RunWithBody, SendEmailBody, type ExecutionDetail, type ExecutionSummary, type ExecutionUsage } from '@meetpilot/shared';
 import { connector } from '../services/connector.js';
 import { requireUser, type AuthUser } from '../app.js';
 import { HttpError } from '../errors.js';
@@ -17,7 +17,10 @@ const toSummary = (r: any): ExecutionSummary => ({
   agent: r.agent, status: r.status, revision: r.revision, summary: r.summary, error: r.error, routeReason: r.route_reason,
   reviewer: r.reviewer_id ? { id: r.reviewer_id, username: r.reviewer_name } : null,
   assignee: r.assigned_to ? { id: r.assigned_to, username: r.assignee_name } : null, dueDate: r.due, updatedAt: r.updated_at,
+  confidence: r.confidence ?? null, routeConfidence: r.route_confidence ?? null, stagePlan: r.stage_plan ?? null,
 });
+
+const toUsage = (u: any): ExecutionUsage | null => u ? ({ calls: u.calls ?? 0, promptTokens: u.prompt_tokens ?? 0, completionTokens: u.completion_tokens ?? 0, costUsd: u.cost_usd ?? 0, models: u.models ?? [] }) : null;
 
 export async function executionRoutes(app: FastifyInstance) {
   const uuid = (id: string) => { if (!z.string().uuid().safeParse(id).success) throw new HttpError(404, 'not_found', 'not found'); };
@@ -43,12 +46,13 @@ export async function executionRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>('/executions/:id', async (req): Promise<ExecutionDetail> => {
     const me = await requireUser(app, req);
     const e = await load(req.params.id, me);
-    const [task, arts, cons, revs] = await Promise.all([
+    const [task, arts, cons, revs, steps] = await Promise.all([
       app.db.query(`${TASK_SELECT} where t.id = $1`, [e.task_id]),
       app.db.query('select id, type, title, uri, payload, revision from execution_artifacts where execution_id = $1 and revision = $2 order by type, title', [e.id, e.revision]),
       app.db.query('select id, from_agent, to_agent, question, answer, depth from agent_consultations where execution_id = $1 order by created_at', [e.id]),
       app.db.query(`select r.revision, r.verdict, r.comment, r.line_comments, r.created_at, u.username from execution_reviews r left join users u on u.id = r.reviewer_id
                     where r.execution_id = $1 order by r.created_at`, [e.id]),
+      app.db.query('select seq, revision, kind, label, detail, status, started_at, ended_at from execution_steps where execution_id = $1 and revision = $2 order by seq', [e.id, e.revision]),
     ]);
     let send: ExecutionDetail['send'] = null;
     if (e.agent === 'communication') {
@@ -61,11 +65,39 @@ export async function executionRoutes(app: FastifyInstance) {
       };
     }
     return {
-      ...toSummary(e), send, task: toTask(task.rows[0]), notes: e.notes,
+      ...toSummary(e), send, task: toTask(task.rows[0]), notes: e.notes, openQuestions: Array.isArray(e.open_questions) ? e.open_questions : [], usage: toUsage(e.usage),
+      steps: steps.rows.map((r) => ({ seq: r.seq, revision: r.revision, kind: r.kind, label: r.label, detail: r.detail ?? {}, status: r.status, startedAt: r.started_at, endedAt: r.ended_at })),
       artifacts: arts.rows, canReview: e.reviewer_id === me.id && e.status === 'awaiting_review',
       consultations: cons.rows.map((c) => ({ id: c.id, fromAgent: c.from_agent, toAgent: c.to_agent, question: c.question, answer: c.answer, depth: c.depth })),
       reviews: revs.rows.map((r) => ({ revision: r.revision, verdict: r.verdict, comment: r.comment, lineComments: r.line_comments, reviewer: r.username, createdAt: r.created_at })),
     };
+  });
+
+  /** Reviewer overrides "left for a human": run a specialist anyway. */
+  app.post<{ Params: { id: string } }>('/executions/:id/run-with', async (req, reply) => {
+    const me = await requireUser(app, req);
+    const e = await load(req.params.id, me);
+    if (e.reviewer_id !== me.id) throw new HttpError(403, 'forbidden', 'only the reviewer can run an agent on this task');
+    const { agent } = RunWithBody.parse(req.body);
+    if (!(await app.agents.runWith(e.id, agent))) throw new HttpError(409, 'not_skipped', 'this task was already routed to an agent');
+    return reply.status(202).send({ ok: true });
+  });
+
+  /** Live progress from the AI service (shared secret, not a user). */
+  app.post<{ Params: { id: string } }>('/internal/executions/:id/steps', async (req, reply) => {
+    const given = String(req.headers['x-internal-secret'] ?? ''), want = process.env.INTERNAL_SECRET ?? '';
+    if (!want || given.length !== want.length || !timingSafeEqual(Buffer.from(given), Buffer.from(want))) throw new HttpError(401, 'unauthorized', 'invalid internal secret');
+    uuid(req.params.id);
+    const b = z.object({
+      revision: z.number().int().min(0).max(10), seq: z.number().int().min(0).max(50),
+      kind: z.enum(['plan', 'search', 'read', 'consult', 'tool', 'draft', 'check']), label: z.string().max(200),
+      detail: z.record(z.string(), z.any()).optional(), status: z.enum(['running', 'done', 'failed']),
+      started_at: z.string().max(40).optional(), ended_at: z.string().max(40).nullable().optional(),
+    }).parse(req.body);
+    const { rows } = await app.db.query('select 1 from executions where id = $1', [req.params.id]);
+    if (!rows[0]) throw new HttpError(404, 'not_found', 'execution not found');
+    await app.agents.recordStep(req.params.id, b.revision, b);
+    return reply.status(204).send();
   });
 
   // Approve completes the task; Request changes sends feedback to the agent for another pass, up to 3 times (F8.6).
