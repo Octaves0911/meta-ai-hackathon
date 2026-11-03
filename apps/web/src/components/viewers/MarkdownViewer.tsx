@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react';
 
-// Small, safe Markdown renderer (headings, lists, quotes, code, bold, inline code, http(s) links). Never uses innerHTML.
+// Small, safe Markdown renderer (headings, lists, tables, quotes, code, bold, inline code, http(s) links). Never uses innerHTML.
+const cells = (row: string) => row.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+const isRule = (row: string | undefined) => !!row && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/.test(row);
 function inline(text: string): ReactNode[] {
   const out: ReactNode[] = [];
   const re = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\((?:https?:\/\/)[^)\s]+\))/g;
@@ -28,6 +30,15 @@ export function MarkdownViewer({ source }: { source: string }) {
       for (i++; i < lines.length && !lines[i].startsWith('```'); i++) buf.push(lines[i]);
       i++;
       nodes.push(<pre key={key++}><code>{buf.join('\n')}</code></pre>);
+    } else if (line.trim().startsWith('|') && isRule(lines[i + 1])) {
+      const head = cells(line);
+      const rows: string[][] = [];
+      for (i += 2; i < lines.length && lines[i].trim().startsWith('|'); i++) rows.push(cells(lines[i]));
+      nodes.push(
+        <div key={key++} style={{ overflowX: 'auto' }}>
+          <table className="md-table"><thead><tr>{head.map((h, c) => <th key={c}>{inline(h)}</th>)}</tr></thead>
+            <tbody>{rows.map((r, ri) => <tr key={ri}>{head.map((_, c) => <td key={c}>{inline(r[c] ?? '')}</td>)}</tr>)}</tbody></table>
+        </div>);
     } else if (/^#{1,3}\s/.test(line)) {
       const level = line.match(/^#+/)![0].length;
       const Tag = (`h${level + 1}`) as 'h2' | 'h3' | 'h4';
@@ -44,7 +55,7 @@ export function MarkdownViewer({ source }: { source: string }) {
     } else if (!line.trim()) { i++; }
     else {
       const buf: string[] = [];
-      while (i < lines.length && lines[i].trim() && !/^(#{1,3}\s|```|>|\s*([-*]|\d+\.)\s)/.test(lines[i])) buf.push(lines[i++]);
+      while (i < lines.length && lines[i].trim() && !/^(#{1,3}\s|```|>|\||\s*([-*]|\d+\.)\s)/.test(lines[i])) buf.push(lines[i++]);
       nodes.push(<p key={key++}>{inline(buf.join(' '))}</p>);
     }
   }

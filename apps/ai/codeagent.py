@@ -148,7 +148,7 @@ async def _run_bundle(req: RunRequest, state: _State, trace: Trace, reason: str)
             ArtifactOut(type="file", title=f"Site files ({len(files)})", payload={"filename": f"{slug}-site.zip", "mime": "application/zip", "size": len(data), "kind": "site",
                                                                               "files": [{"path": p, "size": len(files[p].encode())} for p in sorted(files)], "file_b64": base64.b64encode(data).decode("ascii")}),
             ArtifactOut(type="verification", title="Verification: Not tested", payload={"status": status, "reason": reason_txt, "mode": "static", "repo": "", "branch": "", "ecosystem": "static site", "seconds": 0, "cost_usd": 0, "summary": "Not tested",
-                                                                                      "warnings": [], "steps": [{"label": c.label, "ok": c.ok, "output": c.detail, "command": "static check"} for c in checks]})]
+                                                                                      "warnings": [], "steps": [{"phase": "static", "label": c.label, "exit_code": 0 if c.ok else 1, "seconds": 0, "timed_out": False, "output": c.detail, "counts": {}} for c in checks]})]
     open_q = list(check.open_questions) + [f"Confirm {b}" for b in check.blocking] + [f"Check failed: {p}" for p in problems[:3]]
     conf = check.confidence * (0.7 if ok else 0.4) * (0.6 if check.blocking else 1.0)
     return RunResponse(summary=(out.get("summary") or req.task.title)[:300], notes="A static site, checked by code only. Open the preview, review the files, then download the zip.", artifacts=arts,
