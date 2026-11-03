@@ -4,7 +4,7 @@ import type { Metrics } from './metrics.js';
 
 export const EVENTS = [
   'meeting_created', 'meeting_joined', 'captions_started', 'captions_error', 'ai_assist_toggled', 'insight_posted', 'insight_feedback',
-  'ai_question_asked', 'task_created', 'meeting_closed', 'execution_routed', 'execution_review', 'integration_connected', 'email_sent',
+  'ai_question_asked', 'task_created', 'meeting_closed', 'execution_routed', 'execution_review', 'integration_connected', 'email_sent', 'repo_added', 'github_token_saved',
 ] as const;
 export type EventName = (typeof EVENTS)[number];
 

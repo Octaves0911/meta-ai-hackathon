@@ -5,6 +5,7 @@ import type { Health } from '@meetpilot/shared';
 import { HttpError } from './errors.js';
 import { userRoutes } from './routes/users.js';
 import { projectRoutes } from './routes/projects.js';
+import { repoRoutes } from './routes/repos.js';
 import { intelligenceRoutes } from './routes/intelligence.js';
 import { meetingRoutes } from './routes/meetings.js';
 import { notificationRoutes } from './routes/notifications.js';
@@ -79,6 +80,7 @@ export function buildApp(db: pg.Pool): FastifyInstance {
   app.get('/health', async (): Promise<Health> => ({ service: 'backend', status: 'ok' }));
   app.register(userRoutes, { prefix: '/api' });
   app.register(projectRoutes, { prefix: '/api' });
+  app.register(repoRoutes, { prefix: '/api' });
   app.register(intelligenceRoutes, { prefix: '/api' });
   app.register(meetingRoutes, { prefix: '/api' });
   app.register(notificationRoutes, { prefix: '/api' });
