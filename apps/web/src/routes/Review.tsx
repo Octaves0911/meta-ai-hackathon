@@ -47,10 +47,10 @@ export function Review() {
   const crumbs = <Link to="/reviews" className="row" style={{ gap: 6, color: 'var(--text-2)' }}><ArrowLeft size={16} /> Agent reviews</Link>;
   if (!d) return <AppShell active="reviews" crumbs={crumbs}>{error ? <div className="card"><EmptyState icon={Bot} title="Review not found">{error}</EmptyState></div> : <div className="stack"><Skeleton h={34} w={300} /><Skeleton h={120} /><Skeleton h={220} /></div>}</AppShell>;
 
-  const submit = async (verdict: 'approve' | 'changes' | 'reject') => {
+  const submit = async (verdict: 'approve' | 'changes' | 'reject', choice?: 'A' | 'B') => {
     setBusy(true); setError('');
     try {
-      await api(`/executions/${d.id}/review`, { method: 'POST', json: { verdict, comment: comment.trim() || undefined } });
+      await api(`/executions/${d.id}/review`, { method: 'POST', json: { verdict, choice, comment: comment.trim() || undefined } });
       toast.success(verdict === 'approve' ? 'Approved. The task is done.' : verdict === 'reject' ? 'Rejected. The task is back with a person.' : 'Sent back to the agent');
       setComment(''); setTab(0); await load();
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
@@ -60,6 +60,8 @@ export function Review() {
   const arts = d.artifacts;
   const current = arts[Math.min(tab, Math.max(arts.length - 1, 0))];
   const revisionsLeft = MAX_REVISIONS - d.revision;
+  // Design work with two directions: approving means choosing one.
+  const directions = arts.filter((a) => a.type === 'html' && a.payload?.direction);
 
   return (
     <AppShell active="reviews" crumbs={crumbs}>
@@ -83,6 +85,7 @@ export function Review() {
           </dl>
         </div>
 
+        {d.approvedChoice && <div className="note-inline success" role="status"><CheckCircle2 size={18} /> <span><strong>Approved direction {d.approvedChoice}.</strong> {arts.find((a) => a.payload?.direction === d.approvedChoice)?.payload?.name ?? ''}</span></div>}
         <StagePlan plan={d.stagePlan} />
         <RunWith d={d} onDone={load} />
         {d.status === 'rejected' && <div className="note-inline info" role="status"><Ban size={18} /> <span><strong>Rejected.</strong> {d.reviews.filter((r) => r.verdict === 'reject').at(-1)?.comment ?? ''} The task is back with a person.</span></div>}
@@ -145,7 +148,9 @@ export function Review() {
             <div className="row">
               <button disabled={busy || !comment.trim()} onClick={() => submit('reject')} title="Stop this work and hand the task back to a person. Add the reason above."><Ban size={15} /> Reject</button>
               <button disabled={busy || !comment.trim() || revisionsLeft <= 0} onClick={() => submit('changes')}><RotateCcw size={15} /> Request changes</button>
-              <button className="primary" disabled={busy} onClick={() => submit('approve')}><Send size={15} /> Approve</button>
+              {directions.length >= 2
+                ? directions.map((a) => <button key={a.id} className="primary" disabled={busy} onClick={() => submit('approve', a.payload!.direction)} title={`Approve direction ${a.payload!.direction}: ${a.payload!.name ?? ''}`}><Send size={15} /> Approve {a.payload!.direction}</button>)
+                : <button className="primary" disabled={busy} onClick={() => submit('approve')}><Send size={15} /> Approve</button>}
             </div>
           </div>
           {error && <p className="error" role="alert" style={{ margin: 0 }}>{error}</p>}
