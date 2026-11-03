@@ -1,4 +1,4 @@
-import { Activity, CheckCircle2, CircleHelp, Gauge, Loader2, Play, XCircle } from 'lucide-react';
+import { Activity, CheckCircle2, CircleHelp, Gauge, GitBranch, Loader2, Play, XCircle } from 'lucide-react';
 import { useState } from 'react';
 import type { AgentName, ExecutionDetail, ExecutionStep } from '@meetpilot/shared';
 import { api } from '../lib/api';
@@ -56,7 +56,7 @@ export function AgentTrace({ steps, busy }: { steps: ExecutionStep[]; busy: bool
 
 /** Planned hand-offs, e.g. Designer → Code for a web page. */
 export function StagePlan({ plan }: { plan: ExecutionDetail['stagePlan'] }) {
-  if (!plan || plan.stages.length < 2) return null;
+  if (!plan?.stages || plan.stages.length < 2) return null;  // a plan can hold only a repository question
   return <div className="faint" style={{ marginBottom: 12 }}>Plan: {plan.stages.map((s) => AGENT_LABEL[s.agent] ?? s.agent).join(' → ')} (each stage is reviewed before the next starts)</div>;
 }
 
@@ -81,6 +81,32 @@ export function RunWith({ d, onDone }: { d: ExecutionDetail; onDone: () => void 
         <button className="primary" disabled={busy} onClick={run}><Play size={15} /> Run with {AGENT_LABEL[agent]}</button>
       </div>
       {d.stagePlan?.missingInputs?.length ? <p className="muted" style={{ margin: '8px 0 0' }}>It may need: {d.stagePlan.missingInputs.join('; ')}</p> : null}
+    </div>
+  );
+}
+
+/** Code work where several linked repositories fit: the reviewer decides, the agent never guesses. */
+export function RepoChoice({ d, onDone }: { d: ExecutionDetail; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const choice = d.stagePlan?.repoChoice;
+  if (!choice || d.status !== 'awaiting_review' || !d.canReview) return null;
+  const pick = async (repoId: string) => {
+    setBusy(true);
+    try { await api(`/executions/${d.id}/repo`, { method: 'POST', json: { repoId } }); toast('Working on it…'); onDone(); }
+    catch (e) { toast.error((e as Error).message); } finally { setBusy(false); }
+  };
+  return (
+    <div className="card" style={{ marginBottom: 16, borderColor: 'var(--warn)' }} role="group" aria-label="Choose the repository">
+      <h3 className="row" style={{ gap: 8, margin: '0 0 6px' }}><GitBranch size={17} /> Which repository should this change go to?</h3>
+      <p className="muted" style={{ margin: '0 0 10px' }}>{choice.reason} Nothing has been changed yet.</p>
+      <div className="stack" style={{ gap: 8 }}>
+        {choice.candidates.map((c) => (
+          <div key={c.repo_id} className="row" style={{ gap: 10, alignItems: 'flex-start', justifyContent: 'space-between', padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 10 }}>
+            <div><strong>{c.full_name}</strong> <span className="faint">· {Math.round(c.score * 100)}% match</span>{c.reason && <div className="muted" style={{ fontSize: 13 }}>{c.reason}</div>}</div>
+            <button className="primary" disabled={busy} onClick={() => pick(c.repo_id)}>Use this repository</button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
