@@ -10,6 +10,7 @@ import { IntegrationsPanel } from '../components/IntegrationsPanel';
 import { MeetingsTable } from '../components/MeetingsTable';
 import { AgentPrivacy } from '../components/AgentPrivacy';
 import { NewMeetingModal } from '../components/NewMeetingModal';
+import { ProjectRepos } from '../components/ProjectRepos';
 import { NewProjectModal } from '../components/NewProjectModal';
 import { WorkspacePanel } from '../components/WorkspacePanel';
 import { EmptyState, Skeleton, toast, useConfirm } from '../ui';
@@ -90,7 +91,7 @@ export function Dashboard() {
               </>
             )}
             {active === 'workspace' && <WorkspacePanel projectId={project.id} />}
-            {active === 'integrations' && <><AgentPrivacy project={project} onChanged={loadProjects} /><IntegrationsPanel projectId={project.id} /></>}
+            {active === 'integrations' && <><AgentPrivacy project={project} onChanged={loadProjects} /><ProjectRepos project={project} /><IntegrationsPanel projectId={project.id} /></>}
           </>
         )}
 

@@ -297,3 +297,27 @@ export interface MeetingSummary {
   moments: Moment[];
   tasks: { total: number; done: number; overdue: number; unassigned: number; byStatus: Record<TaskStatusT, number>; byAssignee: { name: string; total: number; done: number }[] };
 }
+
+// ---- project repositories (docs/09 §1.10)
+export interface GithubRepoRef { owner: string; name: string }
+/** Accepts https://github.com/owner/name (with .git, a trailing slash, or /tree/... after it) or plain owner/name. Anything else is refused. */
+export function parseGithubRepo(input: string): GithubRepoRef | null {
+  const s = String(input ?? '').trim();
+  if (!s || s.length > 300 || /[\s\0]/.test(s)) return null;
+  const owner = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})', name = '[A-Za-z0-9._-]{1,100}';
+  const m = new RegExp(`^https://github\\.com/(${owner})/(${name}?)(?:\\.git)?(?:/(?:tree|blob|pulls?|issues?|commits?)/[^?#]*)?/?(?:[?#].*)?$`, 'i').exec(s)
+    ?? new RegExp(`^(${owner})/(${name}?)(?:\\.git)?$`, 'i').exec(s);
+  if (!m) return null;
+  const repo = m[2].replace(/\.git$/i, '');
+  if (repo === '.' || repo === '..' || !repo) return null;
+  return { owner: m[1], name: repo };
+}
+export const AddRepoBody = z.object({ url: z.string().trim().min(3).max(300), description: z.string().trim().max(300).optional() });
+export const UpdateRepoBody = z.object({ description: z.string().trim().max(300).nullable() });
+export const GithubTokenBody = z.object({ token: z.string().trim().min(20).max(255).regex(/^[A-Za-z0-9_\-]+$/, 'that does not look like a GitHub token') });
+export const MAX_PROJECT_REPOS = 10;
+export interface ProjectRepo {
+  id: string; owner: string; name: string; fullName: string; url: string; defaultBranch: string; description: string | null; githubDescription: string | null;
+  isPrivate: boolean; canPush: boolean; language: string | null; languages: Record<string, number>; indexedAt: string | null; createdAt: string;
+}
+export interface GithubStatus { connected: boolean; account: string | null }

@@ -4,11 +4,12 @@ import { timingSafeEqual } from 'node:crypto';
 import { z, ZodError } from 'zod';
 import type { Health } from '@meetpilot/shared';
 import { Connector, ConnectorError } from './service.js';
+import { GithubError, GithubService } from './github.js';
 
 const Services = z.array(z.enum(['gmail', 'drive'])).min(1).max(2);
 const uuid = z.string().uuid();
 
-export function buildApp(db: pg.Pool, connector = new Connector(db)) {
+export function buildApp(db: pg.Pool, connector = new Connector(db), github = new GithubService(db)) {
   const app = Fastify({ logger: process.env.NODE_ENV !== 'test', bodyLimit: 16 * 1024 * 1024 }); // internal only (shared secret); room for 10 MB of attachments as base64
 
   // Every route except /health needs the shared secret; this service fails closed without one (docs/06).
@@ -18,6 +19,7 @@ export function buildApp(db: pg.Pool, connector = new Connector(db)) {
     if (!want || given.length !== want.length || !timingSafeEqual(Buffer.from(given), Buffer.from(want))) return reply.status(401).send({ error: { code: 'unauthorized', message: 'invalid internal secret' } });
   });
   app.setErrorHandler((err, _req, reply) => {
+    if (err instanceof GithubError) return reply.status(err.status).send({ error: { code: err.code, message: err.message } });
     if (err instanceof ConnectorError) return reply.status(err.status).send({ error: { code: err.code, message: err.message } });
     if (err instanceof ZodError) return reply.status(400).send({ error: { code: 'invalid_request', message: err.issues.map((i) => i.message).join('; ') } });
     app.log.error({ msg: (err as Error).message }, 'request failed'); // never log tokens or request bodies
@@ -34,6 +36,15 @@ export function buildApp(db: pg.Pool, connector = new Connector(db)) {
     subject: z.string().max(1000), body: z.string().max(200_000), threadId: z.string().max(200).nullish(), inReplyTo: z.string().max(500).nullish(), references: z.string().max(2000).nullish(),
     attachments: z.array(z.object({ filename: z.string().max(120), mime: z.string().max(100), data_b64: z.string().max(14_500_000) })).max(5).optional(),
   }).parse(req.body)));
+  // ---- GitHub: per-project token (sealed here) and repository inspection (docs/09 §1.10)
+  const repoPart = z.string().min(1).max(100);
+  app.get('/github/status', async (req) => github.status(uuid.parse((req.query as any)?.projectId)));
+  app.put('/github/token', async (req) => { const b = z.object({ projectId: uuid, userId: uuid, token: z.string().min(20).max(255).regex(/^[A-Za-z0-9_\-]+$/) }).parse(req.body); return github.saveToken(b.projectId, b.userId, b.token); });
+  app.delete('/github/token', async (req, reply) => { await github.removeToken(uuid.parse((req.query as any)?.projectId)); return reply.status(204).send(); });
+  app.post('/github/inspect', async (req) => { const b = z.object({ projectId: uuid, owner: repoPart, name: repoPart }).parse(req.body); return github.inspect(b.projectId, b.owner, b.name); });
+  /** For the sandbox's clone only; never exposed to a browser (the backend does not proxy it). */
+  app.get('/github/clone-token', async (req) => ({ token: await github.cloneToken(uuid.parse((req.query as any)?.projectId)) }));
+
   app.get('/connections', async (req) => { const q = z.object({ projectId: uuid, userId: uuid }).parse(req.query); return connector.list(q.projectId, q.userId); });
   app.put<{ Params: { id: string } }>('/connections/:id', async (req, reply) => {
     const b = z.object({
