@@ -73,6 +73,23 @@ if (plants) {
   ok('overridden run completes with a confidence score', done?.status === 'awaiting_review' && done.confidence != null, done);
 }
 
+// Research uses the web (real search) and never the project's private terms; the owner's switch turns the web off.
+const runResearch = async (title, description) => {
+  const t = (await db.query("insert into tasks(meeting_id, project_id, title, description, finalized, assigned_to) values ($1,$2,$3,$4,true,$5) returning id", [M, P.id, title, description, id('core_priya')])).rows[0].id;
+  const x = (await db.query("insert into executions(task_id, agent, status, reviewer_id, error) values ($1,'research','failed',$2,'x') returning id", [t, id('core_priya')])).rows[0].id;
+  await api(`/api/executions/${x}/retry`, 'core_priya', 'POST');
+  return waitFor(async () => { const d = (await api(`/api/executions/${x}`, 'core_priya')).body; return ['awaiting_review', 'failed'].includes(d.status) && d; }, 170000);
+};
+const on = await runResearch('Compare Slack and Microsoft Teams pricing', 'Compare the paid pricing of Slack and Microsoft Teams');
+ok('research searched the web and listed verified sources', on?.status === 'awaiting_review' && on.usage?.searches >= 1 && on.artifacts.some((x) => x.type === 'link' && x.payload.items?.length >= 1), { status: on?.status, searches: on?.usage?.searches, types: on?.artifacts.map((x) => x.type), q: on?.openQuestions });
+ok('sources are web pages and the report names the search date', !!on && on.artifacts.filter((x) => x.type === 'link').every((x) => x.payload.items.every((i) => /^https?:\/\//.test(i.url))) && /searched on \d{4}-\d{2}-\d{2}/.test(on.artifacts.find((x) => x.type === 'markdown').payload.content), on?.artifacts.map((x) => x.title));
+ok('search cost is part of the run cost and confidence is recorded', on?.usage?.costUsd > 0 && typeof on.confidence === 'number', on?.usage);
+const hasSteps = on?.steps.some((x) => x.kind === 'search' && x.status === 'done');
+ok('the trace shows the search step', !!hasSteps, on?.steps.map((x) => `${x.kind}:${x.status}`));
+await api(`/api/projects/${P.id}/settings`, 'core_priya', 'PATCH', { noExternalLookups: true });
+const off = await runResearch('Compare Slack and Microsoft Teams pricing again', 'Compare the paid pricing of Slack and Microsoft Teams');
+ok('with external lookups off there is no web search and the report says so', off?.status === 'awaiting_review' && !(off.usage?.searches > 0) && !off.artifacts.some((x) => x.type === 'link') && /No web search was used/.test(off.artifacts.find((x) => x.type === 'markdown').payload.content) && off.openQuestions.some((q) => /off for this project/.test(q)), { status: off?.status, searches: off?.usage?.searches, q: off?.openQuestions });
+
 await db.query('delete from projects where id = $1', [P.id]);
 await db.query('delete from users where username = any($1)', [U]);
 await db.end();

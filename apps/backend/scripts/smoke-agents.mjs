@@ -116,6 +116,16 @@ ok('rejected: status, reason in history, no longer reviewable', rej.status === '
 ok('rejecting hands the task back to a person (open)', (await db.query("select 1 from tasks where id=$1 and status='open'", [t])).rowCount === 1);
 ok('rejected work shows under failed/rejected, and cannot be reviewed again', (await api('/reviews?group=problem', 'dev')).body.some((x) => x.id === ex) && (await api(`/executions/${ex}/review`, 'dev', 'POST', { verdict: 'approve' })).status === 409);
 
+// research sources + the owner's no-external-lookups switch
+const resDetail = (await api(`/executions/${research.id}`, 'dev')).body;
+const srcArt = resDetail.artifacts.find((x) => x.type === 'link' && Array.isArray(x.payload?.items));
+ok('research delivers a sources artifact with real web links', !!srcArt && srcArt.payload.items.length >= 1 && srcArt.payload.items.every((i) => /^https:\/\//.test(i.url)), srcArt);
+ok('owner can switch external lookups off; members cannot', (await api(`/projects/${P.id}/settings`, 'rita', 'PATCH', { noExternalLookups: true })).body?.noExternalLookups === true
+  && [403, 404].includes((await api(`/projects/${P.id}/settings`, 'dev', 'PATCH', { noExternalLookups: false })).status)
+  && (await api('/projects', 'rita')).body.find((p) => p.id === P.id).noExternalLookups === true);
+ok('invalid settings are refused', (await api(`/projects/${P.id}/settings`, 'rita', 'PATCH', { noExternalLookups: 'yes' })).status === 400);
+await api(`/projects/${P.id}/settings`, 'rita', 'PATCH', { noExternalLookups: false });
+
 // live chat with the agent, then Apply & rerun
 const t2 = (await db.query("insert into tasks(meeting_id, project_id, title, description, finalized, assigned_to) values ($1,$2,'Research the market', 'Dev will research the market', true, $3) returning id", [M, P.id, id('dev')])).rows[0].id;
 const ex2 = (await db.query("insert into executions(task_id, agent, status, reviewer_id, error) values ($1,'research','failed',$2,'boom') returning id", [t2, id('dev')])).rows[0].id;

@@ -8,6 +8,7 @@ import { AppShell, type NavKey } from '../components/AppShell';
 import { IntelligenceDashboard } from '../components/intel/IntelligenceDashboard';
 import { IntegrationsPanel } from '../components/IntegrationsPanel';
 import { MeetingsTable } from '../components/MeetingsTable';
+import { AgentPrivacy } from '../components/AgentPrivacy';
 import { NewMeetingModal } from '../components/NewMeetingModal';
 import { NewProjectModal } from '../components/NewProjectModal';
 import { WorkspacePanel } from '../components/WorkspacePanel';
@@ -89,7 +90,7 @@ export function Dashboard() {
               </>
             )}
             {active === 'workspace' && <WorkspacePanel projectId={project.id} />}
-            {active === 'integrations' && <IntegrationsPanel projectId={project.id} />}
+            {active === 'integrations' && <><AgentPrivacy project={project} onChanged={loadProjects} /><IntegrationsPanel projectId={project.id} /></>}
           </>
         )}
 

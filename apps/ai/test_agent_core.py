@@ -214,7 +214,7 @@ class AgentRunTest(unittest.IsolatedAsyncioTestCase):
         os.environ.pop("AGENTS_MODE", None)
 
     async def run_agent(self, name, req, text=None, jsons=None, checks=None):
-        jsons = list(jsons or [])
+        jsons = list(jsons or [{"consult": []}])
         checks = list(checks or [quality.Check(confidence=0.9)])
         texts = list(text or ["# Report\nBody"])
 
@@ -229,23 +229,23 @@ class AgentRunTest(unittest.IsolatedAsyncioTestCase):
         return agents.RunRequest(**sample_brief(**kw).model_dump())
 
     async def test_text_agent_returns_confidence_trace_and_usage(self):
-        out = await self.run_agent("research", self.req(), checks=[quality.Check(confidence=0.9, open_questions=["Which region?"])])
+        out = await self.run_agent("marketing", self.req(), checks=[quality.Check(confidence=0.9, open_questions=["Which region?"])])
         self.assertEqual(out.confidence, 0.9)
         self.assertEqual(out.open_questions, ["Which region?"])
-        self.assertEqual([s["kind"] for s in out.steps], ["read", "draft", "check"])
+        self.assertEqual([s["kind"] for s in out.steps], ["read", "plan", "draft", "check"])
         self.assertIn("cost_usd", out.usage)
 
     async def test_a_failed_check_triggers_exactly_one_repair(self):
         bad = quality.Check(confidence=0.4, blocking=["ignores the new launch date"])
         good = quality.Check(confidence=0.85)
-        out = await self.run_agent("research", self.req(), text=["v1", "v2"], checks=[bad, good])
+        out = await self.run_agent("marketing", self.req(), text=["v1", "v2"], checks=[bad, good])
         self.assertEqual([s["label"] for s in out.steps if s["kind"] == "draft"].__len__(), 2)
         self.assertEqual(out.artifacts[0].content, "v2")
         self.assertEqual(out.confidence, 0.85)
 
     async def test_unrepaired_defects_lower_confidence_and_surface_as_questions(self):
         bad = quality.Check(confidence=0.8, blocking=["budget figure is unsourced"])
-        out = await self.run_agent("research", self.req(), text=["v1", "v2"], checks=[bad, bad])
+        out = await self.run_agent("marketing", self.req(), text=["v1", "v2"], checks=[bad, bad])
         self.assertLess(out.confidence, 0.6)
         self.assertIn("Confirm budget figure is unsourced", out.open_questions)
 

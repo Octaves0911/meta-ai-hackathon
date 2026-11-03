@@ -1,12 +1,12 @@
 import type { FastifyInstance } from 'fastify';
-import { CreateProjectBody, type Project, type ProjectOverview } from '@meetpilot/shared';
+import { CreateProjectBody, ProjectSettingsBody, type Project, type ProjectOverview } from '@meetpilot/shared';
 import { requireUser } from '../app.js';
 import { HttpError } from '../errors.js';
 import { connector } from '../services/connector.js';
 
 const toProject = (r: any): Project => ({
   id: r.id, name: r.name, description: r.description, ownerId: r.owner_id,
-  shareWorkspace: r.share_workspace, role: r.role, createdAt: r.created_at,
+  shareWorkspace: r.share_workspace, role: r.role, createdAt: r.created_at, noExternalLookups: r.no_external_lookups ?? false,
 });
 
 export async function projectRoutes(app: FastifyInstance) {
@@ -47,6 +47,16 @@ export async function projectRoutes(app: FastifyInstance) {
     if (!rows[0]) throw new HttpError(404, 'not_found', 'project not found');
     return rows[0].role as 'owner' | 'member';
   }
+
+  /** Owner-only project switches (currently: no web lookups by agents). */
+  app.patch<{ Params: { id: string } }>('/projects/:id/settings', async (req) => {
+    const me = await requireUser(app, req);
+    if ((await memberOf(req.params.id, me.id)) !== 'owner') throw new HttpError(403, 'forbidden', 'only the owner can change this');
+    const body = ProjectSettingsBody.parse(req.body);
+    const { rows } = await app.db.query(
+      `update projects set no_external_lookups = coalesce($2, no_external_lookups) where id = $1 returning *`, [req.params.id, body.noExternalLookups ?? null]);
+    return toProject({ ...rows[0], role: 'owner' });
+  });
 
   app.get<{ Params: { id: string } }>('/projects/:id/overview', async (req): Promise<ProjectOverview> => {
     const me = await requireUser(app, req);

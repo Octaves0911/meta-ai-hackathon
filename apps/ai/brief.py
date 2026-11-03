@@ -62,6 +62,7 @@ class BriefIn(BaseModel):
     decisions: list[DecisionIn] = Field(default_factory=list, max_length=12)
     neighbours: list[NeighbourIn] = Field(default_factory=list, max_length=12)
     prior_work: list[PriorWork] = Field(default_factory=list, max_length=4)
+    allow_web: bool = True  # false when the project forbids external lookups (docs/09 §2.1)
 
 
 BUDGET = {"lines": 3500, "decisions": 1200, "neighbours": 900, "prior": 1200, "memory": 4500}

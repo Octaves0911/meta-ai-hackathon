@@ -18,6 +18,8 @@ export interface BriefBody {
   decisions: { key: string; value: string; previous: string[] }[];
   neighbours: { title: string; assignee: string | null; status: string | null }[];
   prior_work: { title: string; agent: string; summary: string }[];
+  /** false when the project's owner switched external lookups off. */
+  allow_web: boolean;
 }
 
 /** The transcript window around the sentence(s) a task came from: ±LINE_RADIUS segments, the task's own segments marked. Capped. */
@@ -56,7 +58,7 @@ export async function buildBrief(db: Pool, embedder: Embedder, e: {
   id: string; task_id: string; project_id: string; meeting_id: string; reviewer_id: string; agent: string | null;
   title: string; description: string | null; due: string | null; assignee: string | null;
 }): Promise<BriefBody> {
-  const [task, meeting, parts, decisions, neighbours, approved] = await Promise.all([
+  const [task, meeting, parts, decisions, neighbours, approved, project] = await Promise.all([
     db.query(`select t.priority, ev.quote, ev.segment_from_seq as from_seq, ev.segment_to_seq as to_seq, ub.username as assigned_by
               from tasks t left join knowledge_events ev on ev.id = t.event_id left join users ub on ub.id = t.assigned_by where t.id = $1`, [e.task_id]),
     db.query(`select title, description, to_char(coalesce(started_at, created_at), 'YYYY-MM-DD') as day from meetings where id = $1`, [e.meeting_id]),
@@ -67,6 +69,7 @@ export async function buildBrief(db: Pool, embedder: Embedder, e: {
               where t.meeting_id = $1 and t.id <> $2 and t.finalized order by t.created_at limit 10`, [e.meeting_id, e.task_id]),
     db.query(`select t.title, x.agent, x.summary from executions x join tasks t on t.id = x.task_id
               where t.project_id = $1 and x.status = 'approved' and x.task_id <> $2 order by x.updated_at desc limit 25`, [e.project_id, e.task_id]),
+    db.query('select no_external_lookups from projects where id = $1', [e.project_id]),
   ]);
   const t = task.rows[0] ?? {};
   const keys = decisions.rows.map((d) => d.entity_key);
@@ -99,5 +102,6 @@ export async function buildBrief(db: Pool, embedder: Embedder, e: {
     decisions: withHistory(decisions.rows, older.rows),
     neighbours: neighbours.rows.map((r) => ({ title: r.title, assignee: r.assignee, status: r.status })),
     prior_work: rankPriorWork(approved.rows, e.title, e.agent ?? '').map((r) => ({ title: r.title, agent: r.agent, summary: String(r.summary ?? '').slice(0, 600) })),
+    allow_web: !(project.rows[0]?.no_external_lookups ?? false),
   };
 }
