@@ -42,7 +42,7 @@ workspace   file list + matches (code agent)
 Each section has a character budget; everything quoted is wrapped in `<untrusted_source>` (existing rule).
 
 ### 1.3 Router v2
-Structured result: `{category, agent|null, can_ai_do, confidence 0..1, reason, missing_inputs[], human_reason}`.
+Structured result: `{category, agent|null, stages[{agent, goal}], scope, can_ai_do, confidence 0..1, reason, missing_inputs[], human_reason}` (multi-stage plans: §1.9).
 - Model classification with the regex rules as fallback and as a veto for obvious human work (calls, payments, hiring, legal).
 - `confidence < 0.6` → *left for a human* **with a "Run with <agent>" button** (reviewer can override).
 - Records `route_reason` (exists) and `confidence` (new).
@@ -85,8 +85,41 @@ Presentation/Word/spreadsheet tasks in the first pass produce a PDF version (for
 - **Honesty**: any figure in a file is sourced or labelled "assumption" (same rules as the text deliverable); the quality gate checks the spec before the file is built.
 - **Attachable**: a file is `attachable` only after its execution is **approved** (never a draft).
 
-### 1.9 Data model deltas
-`executions`: `confidence real`, `open_questions jsonb`, `usage jsonb`, `route_confidence real`.
+### 1.9 Multi-stage tasks (hand-offs with approval gates)
+Some tasks need more than one agent in sequence. A **consultation** (existing) is an agent asking another for input *inside* its run. A **hand-off** is new: agent A finishes, the human approves, and the approved work **starts agent B automatically**.
+
+**Router v2 returns a plan, not just an agent**: `stages: [{agent, goal}]` (1–3 stages) plus `scope` (`deliverable` or `build`) and the reason. Examples:
+
+| Task says | Plan |
+|---|---|
+| "Design a landing page / website / web app screen / dashboard for the product" | **Designer → (approve) → Code** (a website is meant to be built) |
+| "Design a card / banner / poster / social post / logo / template / mockup / wireframe" | **Designer only** (the deliverable *is* the design) |
+| "Research competitors and draft our positioning" | Research → (approve) → Marketing |
+| "Write the press release and send it to the press list" | Marketing → (approve) → Communication (draft; the *send* is still a separate human click) |
+| "Design the landing page, just a mockup" / "only the design" | Designer only (explicit wording wins) |
+
+If unsure whether a design should be built, the router chooses single-stage and shows a **"Also build it with Code"** button on the approved design (the same hand-off, started by the human). Regex rules veto obvious cases; the model decides the rest; the plan and reason are shown on the task.
+
+**Flow** (each stage is an ordinary execution with its own run, trace, review and revisions ≤ 3):
+1. Stage 1 runs → *awaiting review*.
+2. **Request changes** → only stage 1 re-runs (existing loop). Nothing downstream starts.
+3. **Approve** → stage 1 is locked; **stage 2 starts automatically** with a brief that includes the *approved* output of stage 1 (never a draft). The reviewer is notified that it started and sees it on the stage stepper.
+4. Stage 2 finishes → *awaiting review* → the reviewer approves (or requests changes) again. The **task is `done` only when the final stage is approved**.
+5. Cancelling or rejecting any stage stops the pipeline; earlier approved stages keep their outputs.
+
+Rules:
+- **A human approval gates every hand-off.** No stage consumes unapproved work. Approval is the "go": it is *not* a second confirmation.
+- When a stage has alternatives (Designer A/B), approval **picks one**: *Approve A* / *Approve B* (or "approve with notes"); only the chosen direction is passed on.
+- A later stage that finds the approved input unworkable raises *Needs your input* with a **Send back to stage N** action (counts toward revisions) instead of guessing.
+- Irreversible actions never run in a hand-off: Code never applies or deploys, Communication never sends. Those stay explicit clicks.
+- Limits: ≤ 3 stages per task; cost caps and the daily project cap apply across the whole pipeline; each stage keeps its own timeout.
+- **UI**: a stage stepper at the top of the review (`Design ✓ → Code ● running → Done`), each step opens that stage's review; a notification when a stage is waiting for you or has started.
+- **Dependent tasks** (separate tasks, e.g. "send the design to the client") use the attachment-progress chips (§2.2) instead; a hand-off is for one task that needs several agents.
+
+**Designer → Code, concretely**: the approved mockup (chosen direction, brief, palette/type, real copy) is the Code agent's spec. Code turns it into production structure, not a copy-paste of the mockup: semantic HTML, responsive CSS, accessible markup, components if the stack calls for it. With a connected workspace it targets that project's stack and returns a validated patch (§2.5). With **no workspace** (a new site) it returns a **file bundle** (`site.zip` + file tree viewer, ≤ 40 files / 1 MB, static HTML/CSS/JS by default unless the meeting or brand note names a framework). Never auto-applied, never deployed.
+
+### 1.10 Data model deltas
+`executions`: `confidence real`, `open_questions jsonb`, `usage jsonb`, `route_confidence real`, `pipeline_id uuid`, `stage int`, `stage_plan jsonb` (planned agents + reason), `input_execution_id` (the approved stage whose output this one consumes), `approved_choice text` (e.g. design direction A/B).
 `execution_steps` (new). `execution_artifacts.type` gains `html` (sandboxed mockup) and `table`; `file` and `pdf` get real payloads (§1.8).
 `artifact.payload.sources[]`: `{title, url|label, kind: web|project|mail|drive, quote?}`.
 `email_send_attachments(execution_id, artifact_id, filename, mime, size, sha256)` (new; audit + dedupe).
@@ -145,6 +178,7 @@ Order: **Research → Communication → Marketing → Designer → Code** (Resea
   - `meta`: Muse Image, allowed only when deployed outside restricted jurisdictions.
 - **Pipeline**: consult Marketing (audience, tone) and Research (reference patterns) → design brief (goal, audience, constraints, palette, type scale, layout, copy) → render → self-check against the brief.
 - **Deliverables**: `markdown` brief + `html` mockups (A, B) or `image`; palette/typography as `table`; **files**: `design-brief.pdf` and `mockups.pdf` (A and B, rendered). Image-provider outputs, if enabled, are stored as `file` PNG/JPG. No PNG export of HTML mockups in the first pass.
+- **Approval and hand-off**: approving picks a direction (A or B). If the router planned Designer → Code (website/landing page/web app), approval starts the Code stage with the chosen direction; for cards, banners, posters, logos and templates the approved design is the final output and the task is done (§1.9).
 - **Done when**: two distinct directions render safely in the sandbox on desktop and 375 px widths; HTML with `<script>` or remote URLs is rejected.
 
 ### 2.5 Code agent
@@ -152,10 +186,11 @@ Order: **Research → Communication → Marketing → Designer → Code** (Resea
 - **Tools (read-only, confined to the workspace root)**: `list_files`, `read_file` (≤12 files / 40 KB), `search_code` (existing code index), `git_apply_check` (applies the generated patch to a throw-away copy).
 - **Pipeline**: locate files → read → plan (steps, files touched, risks, tests, rollout) → generate unified diff → validate with `git apply --check` (one repair attempt) → write tests *inside the patch*.
 - **Deliverables**: `markdown` plan + `diff` (per-file) + **files**: `change.patch` (downloadable, `git apply`-able) and `technical-plan.pdf` (shareable with non-developers). No workspace connected → plan only, with a note.
+- **As a second stage**: receives the approved design (chosen direction, brief, palette, copy) as its spec; no workspace → `site.zip` file bundle + file tree viewer; workspace → validated patch.
 - **Review UX**: upgrade the diff viewer (file tree, side-by-side/inline, line comments that feed the revision loop — PRD F8.5).
 - **Done when**: on a seeded sample repo the patch applies cleanly and the proposed test fails before / passes after (checked in the test suite, not in production).
 
-## 3. Collaboration matrix (unchanged limits)
+## 3. Collaboration matrix (consultations; unchanged limits)
 `marketing → research` · `designer → marketing, research` · `communication → research` · `code → research`. Depth ≤ 2, ≤ 4 per task, no cycles; shown in the Collaboration panel (exists) and as `consult` steps in the trace.
 
 ## 4. Review experience (shared)
@@ -182,3 +217,5 @@ Header: agent · status · **Confidence** · cost · revision. Top card: **Needs
 8. ✅ **PNG export of HTML mockups**: skipped (HTML + PDF).
 9. ✅ **Pending attachments**: progress shown live in the email review box; Send disabled until ticked attachments are ready.
 10. ✅ **Max total attachment size**: 10 MB.
+11. ✅ **Multi-stage tasks**: hand-offs with an approval gate at every stage; website/landing page → Designer → Code; card/banner/template → Designer only (§1.9).
+12. **Still open**: Designer PDF from mockups (optional headless browser vs simple drawing), Fireworks in the first pass, Code ceiling (patch / bundle), deployment models, auto-run policy, spend cap.
