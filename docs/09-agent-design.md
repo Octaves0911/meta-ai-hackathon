@@ -73,12 +73,19 @@ Order: **Research → Communication → Marketing → Designer → Code** (Resea
 ### 2.1 Research agent
 - **Handles**: research, compare, analyse, benchmark, investigate, "find out", summarise.
 - **Tools**: `web_search` (≤5), `project_memory_search`, `read_context_item`.
-- **Pipeline**: (1) plan 2–4 sub-questions from the task + meeting context → (2) answer each from project memory first, then web → (3) every claim carries a source → (4) verify: each cited URL must be in the raw search results (no invented links) → (5) write.
+- **Meeting context (always included)**: the Research call receives the live state of the meeting the task came from, so it is up to date and its searches are focused:
+  - the quote and ±10 transcript lines around it, with speaker names (why the task exists, which competitors/regions/products were named);
+  - meeting title, date, attendees, and the agenda or meeting goal if set;
+  - current decisions with change history (e.g. launch date moved 15th → 22nd), key points and open questions from this meeting;
+  - sibling tasks from the same meeting (what else was assigned, to whom), so the report does not duplicate them and can point to them.
+  Budgeted: quote/lines and decisions first (short, high value); project-memory snippets fill the remainder. All wrapped in `<untrusted_source>`.
+- **Pipeline**: (1) **focus**: from task + meeting context, state the exact question to answer, the entities/constraints already named in the meeting, and what the team already decided (so it is not re-researched) → (2) plan 2–4 sub-questions → (3) answer each from project memory first, then web, with **search queries built from the meeting's own terms** (names, regions, versions, dates) and stripped of private details (internal figures, customer names, private mail text) → (4) every claim carries a source → (5) verify: each cited URL must be in the raw search results (no invented links) → (6) write the answer **to the focused question**, flagging where findings conflict with a meeting decision.
+- **Privacy**: anything taken from private Gmail/Drive is labelled in the report; approving a report that contains such items to the shared project warns the reviewer first. A project-level "No external lookups" switch forces project-only mode.
 - **Deliverables**: `markdown` report (Summary · Key findings · Comparison table · Recommendation · Risks & unknowns · Sources) + one `link` artifact per cited source (top 8) + `pdf` export.
 - **Honesty rules**: separate *project facts* from *web facts*; list "could not verify"; date-stamp web facts; report length ≤ ~1,500 words.
 - **Consults**: none (leaf).
 - **Review UX**: sources panel with open-link buttons; claim → source hover.
-- **Done when**: golden task "compare competitor pricing pages" returns ≥3 distinct cited URLs, all present in the search results; a task with no web access degrades to a project-only report that says so.
+- **Done when**: golden task "compare competitor pricing pages" returns ≥3 distinct cited URLs, all present in the search results; a task with no web access degrades to a project-only report that says so; when the meeting named specific competitors, the searches and report cover exactly those; a finding that contradicts a meeting decision is flagged in "Needs your input".
 
 ### 2.2 Communication agent
 - **Handles**: email, reply, announcement, follow-up, newsletter, message.
