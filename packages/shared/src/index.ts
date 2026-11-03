@@ -147,11 +147,12 @@ export const UpdateTaskBody = z.object({
   status: TaskStatus.optional(),
 });
 
-export type ExecutionStatus = 'routed' | 'running' | 'awaiting_review' | 'changes_requested' | 'approved' | 'failed' | 'skipped_human';
+export type ExecutionStatus = 'routed' | 'running' | 'awaiting_review' | 'changes_requested' | 'approved' | 'rejected' | 'failed' | 'skipped_human';
 export type AgentName = 'research' | 'marketing' | 'designer' | 'communication' | 'code';
 export const MAX_REVISIONS = 3;
+export interface ReviewCounts { needsReview: number; working: number }
 export interface ExecutionSummary {
-  id: string; taskId: string; taskTitle: string; meetingId: string; meetingTitle: string;
+  id: string; taskId: string; taskTitle: string; meetingId: string; meetingTitle: string; projectId: string; projectName: string;
   agent: AgentName | null; status: ExecutionStatus; revision: number; summary: string | null; error: string | null;
   routeReason: string | null; reviewer: TaskUser | null; assignee: TaskUser | null; dueDate: string | null; updatedAt: string;
   /** 0..1 self-assessed readiness of the work (quality gate); routeConfidence is how sure the router was. */
@@ -167,7 +168,7 @@ export interface ExecutionArtifact {
   title: string | null; uri: string | null; payload: Record<string, any> | null; revision: number;
 }
 export interface Consultation { id: string; fromAgent: string; toAgent: string; question: string; answer: string | null; depth: number }
-export interface ExecutionReview { revision: number; verdict: 'approve' | 'changes'; comment: string | null; lineComments: unknown[] | null; reviewer: string | null; createdAt: string }
+export interface ExecutionReview { revision: number; verdict: 'approve' | 'changes' | 'reject'; comment: string | null; lineComments: unknown[] | null; reviewer: string | null; createdAt: string }
 export interface ExecutionDetail extends ExecutionSummary {
   task: Task; notes: string | null; artifacts: ExecutionArtifact[]; consultations: Consultation[]; reviews: ExecutionReview[]; canReview: boolean;
   /** Things the agent could not settle and a human must supply or confirm (shown first on a review). */
@@ -177,7 +178,7 @@ export interface ExecutionDetail extends ExecutionSummary {
 }
 export const RunWithBody = z.object({ agent: z.enum(['research', 'marketing', 'designer', 'communication', 'code']) });
 export const ReviewBody = z.object({
-  verdict: z.enum(['approve', 'changes']),
+  verdict: z.enum(['approve', 'changes', 'reject']),
   comment: z.string().trim().max(4000).optional(),
   lineComments: z.array(z.object({ file: z.string().max(300).optional(), line: z.number().int().min(0).optional(), text: z.string().trim().min(1).max(2000) })).max(50).optional(),
 });

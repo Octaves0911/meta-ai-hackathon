@@ -1,19 +1,19 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { EmailDraftBody, MAX_REVISIONS, ReviewBody, RunWithBody, SendEmailBody, type ExecutionDetail, type ExecutionSummary, type ExecutionUsage } from '@meetpilot/shared';
+import { EmailDraftBody, MAX_REVISIONS, ReviewBody, RunWithBody, SendEmailBody, type ExecutionDetail, type ExecutionSummary, type ExecutionUsage, type ReviewCounts } from '@meetpilot/shared';
 import { connector } from '../services/connector.js';
 import { requireUser, type AuthUser } from '../app.js';
 import { HttpError } from '../errors.js';
 import { TASK_SELECT, toTask } from '../insights/tasksFormat.js';
 
 const SUMMARY_SELECT = `select e.*, t.title as task_title, t.meeting_id, m.title as meeting_title, to_char(t.due_date,'YYYY-MM-DD') as due,
-    t.assigned_to, t.project_id, ua.username as assignee_name, e.reviewer_id, ur.username as reviewer_name
-  from executions e join tasks t on t.id = e.task_id join meetings m on m.id = t.meeting_id
+    t.assigned_to, t.project_id, p.name as project_name, ua.username as assignee_name, e.reviewer_id, ur.username as reviewer_name
+  from executions e join tasks t on t.id = e.task_id join meetings m on m.id = t.meeting_id join projects p on p.id = t.project_id
   left join users ua on ua.id = t.assigned_to left join users ur on ur.id = e.reviewer_id`;
 
 const toSummary = (r: any): ExecutionSummary => ({
-  id: r.id, taskId: r.task_id, taskTitle: r.task_title, meetingId: r.meeting_id, meetingTitle: r.meeting_title,
+  id: r.id, taskId: r.task_id, taskTitle: r.task_title, meetingId: r.meeting_id, meetingTitle: r.meeting_title, projectId: r.project_id, projectName: r.project_name,
   agent: r.agent, status: r.status, revision: r.revision, summary: r.summary, error: r.error, routeReason: r.route_reason,
   reviewer: r.reviewer_id ? { id: r.reviewer_id, username: r.reviewer_name } : null,
   assignee: r.assigned_to ? { id: r.assigned_to, username: r.assignee_name } : null, dueDate: r.due, updatedAt: r.updated_at,
@@ -34,13 +34,32 @@ export async function executionRoutes(app: FastifyInstance) {
   }
   const emitUpdate = (r: any, status: string) => r.reviewer_id && app.emitToUser(r.reviewer_id, 'execution:update', { id: r.id, status });
 
-  app.get<{ Querystring: { scope?: string } }>('/reviews', async (req) => {
+  const GROUPS: Record<string, string[]> = {
+    needs_review: ['awaiting_review'], working: ['routed', 'running', 'changes_requested'], done: ['approved'],
+    human: ['skipped_human'], problem: ['failed', 'rejected'],
+  };
+  /** The reviewer's inbox. `scope=needs_review` (legacy) or `group` = needs_review|working|done|human|problem; optional project and agent filters. */
+  app.get<{ Querystring: { scope?: string; group?: string; project?: string; agent?: string } }>('/reviews', async (req) => {
     const me = await requireUser(app, req);
-    const needs = req.query.scope === 'needs_review';
+    const group = req.query.group ?? (req.query.scope === 'needs_review' ? 'needs_review' : '');
+    if (group && !GROUPS[group]) throw new HttpError(400, 'invalid_request', 'unknown group');
+    if (req.query.project) uuid(req.query.project);
+    if (req.query.agent && !['research', 'marketing', 'designer', 'communication', 'code'].includes(req.query.agent)) throw new HttpError(400, 'invalid_request', 'unknown agent');
     const { rows } = await app.db.query(
-      `${SUMMARY_SELECT} where e.reviewer_id = $1 and ($2::boolean is false or e.status = 'awaiting_review')
-       order by (e.status = 'awaiting_review') desc, e.updated_at desc limit 200`, [me.id, needs]);
+      `${SUMMARY_SELECT} where e.reviewer_id = $1 and ($2::text[] is null or e.status = any($2))
+         and ($3::uuid is null or t.project_id = $3) and ($4::text is null or e.agent = $4)
+       order by (e.status = 'awaiting_review') desc, e.updated_at desc limit 200`,
+      [me.id, group ? GROUPS[group] : null, req.query.project ?? null, req.query.agent ?? null]);
     return rows.map(toSummary);
+  });
+
+  /** Badge numbers for the sidebar. */
+  app.get('/reviews/counts', async (req): Promise<ReviewCounts> => {
+    const me = await requireUser(app, req);
+    const { rows } = await app.db.query(
+      `select count(*) filter (where status = 'awaiting_review')::int as needs, count(*) filter (where status in ('routed','running','changes_requested'))::int as working
+       from executions where reviewer_id = $1`, [me.id]);
+    return { needsReview: rows[0].needs, working: rows[0].working };
   });
 
   app.get<{ Params: { id: string } }>('/executions/:id', async (req): Promise<ExecutionDetail> => {
@@ -107,6 +126,7 @@ export async function executionRoutes(app: FastifyInstance) {
     const e = await load(req.params.id, me);
     if (e.reviewer_id !== me.id) throw new HttpError(403, 'forbidden', 'only the reviewer can review this work');
     if (e.status !== 'awaiting_review') throw new HttpError(409, 'not_reviewable', 'this work is not waiting for review');
+    if (body.verdict === 'reject' && !body.comment) throw new HttpError(400, 'invalid_request', 'say why you are rejecting this work');
     if (body.verdict === 'changes') {
       if (!body.comment && !body.lineComments?.length) throw new HttpError(400, 'invalid_request', 'add a comment or at least one line comment');
       if (e.revision >= MAX_REVISIONS) throw new HttpError(409, 'max_revisions', `at most ${MAX_REVISIONS} revisions are allowed`);
@@ -119,6 +139,10 @@ export async function executionRoutes(app: FastifyInstance) {
       if (body.verdict === 'approve') {
         await c.query("update executions set status = 'approved', updated_at = now() where id = $1", [e.id]);
         await c.query("update tasks set status = 'done' where id = $1", [e.task_id]);
+      } else if (body.verdict === 'reject') {
+        // Stop here: the task goes back to a human, the reason stays in the review history.
+        await c.query("update executions set status = 'rejected', updated_at = now() where id = $1", [e.id]);
+        await c.query("update tasks set status = 'open' where id = $1", [e.task_id]);
       } else {
         await c.query("update executions set status = 'changes_requested', revision = revision + 1, updated_at = now() where id = $1", [e.id]);
       }
@@ -131,7 +155,7 @@ export async function executionRoutes(app: FastifyInstance) {
     }
     app.analytics.track('execution_review', { verdict: body.verdict }, { userId: me.id, projectId: e.project_id, meetingId: e.meeting_id });
     if (body.verdict === 'changes') await app.agents.retry(e.id);
-    emitUpdate(e, body.verdict === 'approve' ? 'approved' : 'changes_requested');
+    emitUpdate(e, body.verdict === 'approve' ? 'approved' : body.verdict === 'reject' ? 'rejected' : 'changes_requested');
     return reply.status(204).send();
   });
 
