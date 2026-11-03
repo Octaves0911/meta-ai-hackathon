@@ -3,6 +3,7 @@
 AGENTS_MODE=mock produces deterministic offline deliverables so the whole flow can be exercised without an LLM key.
 Any other value (default) calls the LLM gateway.
 """
+import asyncio
 import os
 import re
 from typing import Literal
@@ -10,7 +11,10 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from llm import complete_json, complete_text, sanitize_label
+from brief import BriefIn, CtxItem, TaskIn, brief_text_for_facts, render_brief, render_context  # noqa: F401  (TaskIn/CtxItem re-exported)
+from llm import agent_model, begin_usage, complete_json, complete_text, sanitize_label
+from quality import Check, self_check, unsupported_facts
+from runtrace import LimitExceeded, Trace
 
 AgentName = Literal["research", "marketing", "designer", "communication", "code"]
 ArtifactType = Literal["markdown", "image", "pdf", "video", "diff", "link", "file", "email_draft"]
@@ -33,31 +37,20 @@ PERSONA = {
 }
 
 
-class TaskIn(BaseModel):
-    title: str = Field(max_length=300)
-    description: str | None = Field(default=None, max_length=4000)
-    due_date: str | None = None
-    assignee: str | None = None
-
-
-class CtxItem(BaseModel):
-    label: str = Field(max_length=300)
-    text: str = Field(max_length=2000)
-    # mail only: sender address, thread id, RFC Message-ID, subject (used to thread replies; never invented)
-    meta: dict[str, str | None] | None = None
-
-
 class Feedback(BaseModel):
     comment: str | None = Field(default=None, max_length=4000)
     line_comments: list[dict] = Field(default_factory=list, max_length=50)
     previous_summary: str | None = Field(default=None, max_length=4000)
 
 
-class RunRequest(BaseModel):
-    task: TaskIn
-    context: list[CtxItem] = Field(default_factory=list, max_length=12)
+WALL_CLOCK_SECONDS = 170  # per run (docs/09 §1.6); the backend's own timeout is 180 s
+
+
+class RunRequest(BriefIn):
     feedback: Feedback | None = None
-    revision: int = Field(default=0, ge=0, le=3)
+    revision: int = Field(default=0, ge=0, le=10)
+    execution_id: str | None = None   # when set, progress steps are streamed to the backend
+    callback_url: str | None = Field(default=None, max_length=200)
 
 
 class ArtifactOut(BaseModel):
@@ -80,6 +73,10 @@ class RunResponse(BaseModel):
     notes: str = ""
     artifacts: list[ArtifactOut]
     consultations: list[Consultation] = Field(default_factory=list)
+    confidence: float | None = None
+    open_questions: list[str] = Field(default_factory=list)
+    usage: dict = Field(default_factory=dict)
+    steps: list[dict] = Field(default_factory=list)
 
 
 class _State:
@@ -93,30 +90,20 @@ class _State:
 
 
 def _ctx_block(ctx: list[CtxItem]) -> str:
-    def tag(c: CtxItem) -> str:
-        m = c.meta or {}
-        extra = "".join(f' {k}="{sanitize_label(str(m[k]))}"' for k in ("from_email", "thread_id") if m.get(k))
-        return f'<untrusted_source label="{sanitize_label(c.label)}"{extra}>{c.text.replace("<", " ").replace(">", " ")}</untrusted_source>'
-
-    return "\n".join(tag(c) for c in ctx) or "(no project context found)"
+    return render_context(ctx)
 
 
 def _task_block(req: RunRequest) -> str:
-    t = req.task
-    parts = [f"Task: {t.title}"]
-    if t.description:
-        parts.append(f"Spoken in the meeting: {t.description}")
-    if t.due_date:
-        parts.append(f"Due: {t.due_date}")
-    if t.assignee:
-        parts.append(f"Assigned to: {t.assignee}")
+    """The whole brief (task, meeting, what was said, decisions, neighbours, prior work, project context) plus reviewer feedback."""
+    parts = [render_brief(req)]
     if req.feedback and (req.feedback.comment or req.feedback.line_comments):
-        parts.append(f"\nThis is revision {req.revision}. The reviewer asked for changes: {req.feedback.comment or ''}")
+        parts.append(f"This is revision {req.revision}. The reviewer asked for changes: {req.feedback.comment or ''}")
         if req.feedback.line_comments:
             parts.append(f"Line comments: {req.feedback.line_comments}")
         if req.feedback.previous_summary:
             parts.append(f"Your previous summary: {req.feedback.previous_summary}")
-    return "\n".join(parts)
+        parts.append("Edit your previous work to address this; keep what the reviewer did not object to.")
+    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------- email helpers
@@ -125,7 +112,7 @@ _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 def _allowed_emails(req: "RunRequest") -> set[str]:
     """Addresses the agent may use: those in the task itself or in the sources. Everything else is invented and dropped."""
-    found = set(_EMAIL.findall(f"{req.task.title} {req.task.description or ''}"))
+    found = set(_EMAIL.findall(f"{req.task.title} {req.task.description or ''} {req.quote or ''} " + " ".join(ln.text for ln in req.source_lines)))
     for c in req.context:
         found.update(_EMAIL.findall(c.text))
         if c.meta and c.meta.get("from_email"):
@@ -209,57 +196,136 @@ async def _consult(frm: str, to: str, question: str, req: RunRequest, state: _St
         return
     answer = await complete_text(
         f"You are {PERSONA[to]}. A colleague ({frm}) asks for input. Answer in at most 6 sentences.",
-        f"Question: {question}\n\nProject context:\n{_ctx_block(req.context)}",
+        f"Question: {question}\n\n{render_brief(req)}",
         max_tokens=600,
     )
     state.consultations.append(Consultation(from_agent=frm, to_agent=to, question=question[:500], answer=answer[:2000], depth=len(stack)))
 
 
-async def _real_run(name: str, req: RunRequest, state: _State) -> RunResponse:
+CHECKED = ("research", "marketing", "designer", "communication", "code")
+
+
+def _kind(name: str) -> str:
+    return {"research": "a sourced research report", "marketing": "a go-to-market / strategy plan", "designer": "a design brief",
+            "code": "an implementation plan (files, steps, risks, tests)"}[name]
+
+
+async def _draft_text(name: str, task: str, consulted: str, model: str | None, fixes: list[str] | None = None) -> str:
+    fix = ("\n\nA reviewer found these defects in your previous draft. Fix every one:\n- " + "\n- ".join(fixes)) if fixes else ""
+    return await complete_text(
+        f"You are {PERSONA[name]}. Produce {_kind(name)} in Markdown with a short summary at the top and a Sources section citing the labels you used. "
+        "Use the CURRENT decision values from the brief. Never invent facts, numbers or sources: if something is unknown, say so under 'Open questions'.",
+        f"{task}{consulted}{fix}", max_tokens=3500, model=model)
+
+
+async def _draft_email(req: RunRequest, task: str, consulted: str, model: str | None, fixes: list[str] | None = None) -> dict:
+    fix = ("\n\nA reviewer found these defects in your previous draft. Fix every one:\n- " + "\n- ".join(fixes)) if fixes else ""
+    return await complete_json(
+        "You draft emails. NEVER invent email addresses: only use addresses present in the task or sources; otherwise leave `to` empty and set "
+        "missing_recipients=true. Every date, number and name must come from the brief; use the CURRENT decision values. "
+        "If you are replying to one of the source emails, set reply_to_source to that source's exact label. "
+        'Return {"to":[],"cc":[],"subject":"","body":"","missing_recipients":bool,"open_questions":[],"summary":"","reply_to_source":null}.',
+        f"{task}{consulted}{fix}", max_tokens=1500, model=model)
+
+
+def _email_payload(req: RunRequest, data: dict) -> tuple[dict, "CtxItem | None"]:
+    allowed = _allowed_emails(req)
+    keep = lambda xs: [str(x).strip() for x in (xs or []) if str(x).strip().lower() in allowed][:10]  # drop anything not in the sources
+    src = next((c for c in req.context if c.label == data.get("reply_to_source")), None) or _thread_source(req)
+    reply = _reply_fields(src)
+    to = keep(data.get("to")) or [e for e in reply.get("to", []) if e.lower() in allowed]
+    payload = {"to": to, "cc": keep(data.get("cc")), "subject": str(data.get("subject") or reply.get("subject") or req.task.title)[:300],
+               "body": str(data.get("body", ""))[:50000], "missing_recipients": not to,
+               "open_questions": [str(x) for x in data.get("open_questions", [])][:5], "sources": [src.label] if src else [c.label for c in req.context],
+               **{k: v for k, v in reply.items() if k in ("thread_id", "in_reply_to", "references") and v}}
+    return payload, src
+
+
+async def _real_run(name: str, req: RunRequest, state: _State, trace: Trace) -> RunResponse:
+    model = agent_model(name)
     task = _task_block(req)
-    ctx = _ctx_block(req.context)
+    async with trace.step("read", "Read the brief", {"lines": len(req.source_lines), "decisions": len(req.decisions), "neighbours": len(req.neighbours),
+                                                    "memory": len(req.context), "prior_work": len(req.prior_work)}):
+        pass
     options = CONSULT_OPTIONS[name]
     if options:  # ask whether another specialist's input is needed (agents help each other)
-        plan = await complete_json(
-            f"You are {PERSONA[name]}. Decide whether you need input from another specialist before starting. "
-            f'Options: {options}. Return {{"consult":[{{"agent":"<option>","question":"<specific question>"}}]}} (empty list if none needed).',
-            f"{task}\n\nProject context:\n{ctx}", max_tokens=400)
-        for item in (plan.get("consult") or [])[:MAX_CONSULTATIONS]:
-            if isinstance(item, dict) and item.get("agent") in options and isinstance(item.get("question"), str):
+        async with trace.step("plan", "Decide whether another specialist is needed") as st:
+            plan = await complete_json(
+                f"You are {PERSONA[name]}. Decide whether you need input from another specialist before starting. "
+                f'Options: {options}. Return {{"consult":[{{"agent":"<option>","question":"<specific question>"}}]}} (empty list if none needed).',
+                task, max_tokens=400, model=model)
+            wanted = [i for i in (plan.get("consult") or [])[:MAX_CONSULTATIONS] if isinstance(i, dict) and i.get("agent") in options and isinstance(i.get("question"), str)]
+            st["detail"]["consult"] = [w["agent"] for w in wanted]
+        for item in wanted:
+            async with trace.step("consult", f"Ask the {item['agent']} agent", {"question": item["question"][:300]}):
                 await _consult(name, item["agent"], item["question"], req, state, [name])
     consulted = "".join(f"\nInput from {c.to_agent}: {c.answer}" for c in state.consultations)
 
     if name == "communication":
-        data = await complete_json(
-            "You draft emails. NEVER invent email addresses: only use addresses present in the task or sources; otherwise leave `to` empty and set "
-            "missing_recipients=true. If you are replying to one of the source emails, set reply_to_source to that source's exact label. "
-            'Return {"to":[],"cc":[],"subject":"","body":"","missing_recipients":bool,"open_questions":[],"summary":"","reply_to_source":null}.',
-            f"{task}\n\nProject context:\n{ctx}{consulted}", max_tokens=1500)
-        allowed = _allowed_emails(req)
-        keep = lambda xs: [str(x).strip() for x in (xs or []) if str(x).strip().lower() in allowed][:10]  # drop anything not in the sources
-        src = next((c for c in req.context if c.label == data.get("reply_to_source")), None) or _thread_source(req)
-        reply = _reply_fields(src)
-        to = keep(data.get("to")) or [e for e in reply.get("to", []) if e.lower() in allowed]
-        payload = {"to": to, "cc": keep(data.get("cc")), "subject": str(data.get("subject") or reply.get("subject") or req.task.title)[:300],
-                   "body": str(data.get("body", ""))[:50000], "missing_recipients": not to,
-                   "open_questions": [str(x) for x in data.get("open_questions", [])][:5], "sources": [src.label] if src else [c.label for c in req.context],
-                   **{k: v for k, v in reply.items() if k in ("thread_id", "in_reply_to", "references") and v}}
+        async with trace.step("draft", "Draft the email"):
+            data = await _draft_email(req, task, consulted, model)
+            payload, src = _email_payload(req, data)
+        grounding = brief_text_for_facts(req)
+        async with trace.step("check", "Check every date, number and name against the meeting") as st:
+            issues = unsupported_facts(f"{payload['subject']}\n{payload['body']}", grounding)
+            check = await self_check(name, task, f"Subject: {payload['subject']}\n\n{payload['body']}", model=model)
+            problems = [f"“{x}” is not in the brief" for x in issues] + check.blocking
+            st["detail"]["issues"] = problems
+        if problems:
+            async with trace.step("draft", "Repair the draft") as st:
+                data = await _draft_email(req, task, consulted, model, fixes=problems)
+                payload, src = _email_payload(req, data)
+                issues = unsupported_facts(f"{payload['subject']}\n{payload['body']}", grounding)
+                check = await self_check(name, task, f"Subject: {payload['subject']}\n\n{payload['body']}", model=model)
+                st["detail"]["remaining"] = issues + check.blocking
+            check.blocking = check.blocking + [f"“{x}” is not in the brief" for x in issues]
+        open_q = [*payload.get("open_questions", []), *check.open_questions, *[f"Confirm {b}" for b in check.blocking]]
+        if not payload["to"]:
+            open_q.insert(0, "Who should receive this email?")
+        payload["open_questions"] = list(dict.fromkeys(open_q))[:6]
+        conf = check.confidence * (0.6 if check.blocking else 1.0) * (0.85 if not payload["to"] else 1.0)
         return RunResponse(summary=str(data.get("summary") or f"Drafted an email for “{req.task.title}”.")[:500],
-                           notes="Check recipients before sending." if not to else "", artifacts=[ArtifactOut(type="email_draft", title="Email draft", payload=payload)], consultations=state.consultations)
+                           notes="Check recipients before sending." if not payload["to"] else "",
+                           artifacts=[ArtifactOut(type="email_draft", title="Email draft", payload=payload)], consultations=state.consultations,
+                           confidence=round(conf, 2), open_questions=payload["open_questions"])
 
-    kind = {"research": "a sourced research report", "marketing": "a go-to-market / strategy plan", "designer": "a design brief", "code": "an implementation plan (files, steps, risks, tests)"}[name]
-    md = await complete_text(
-        f"You are {PERSONA[name]}. Produce {kind} in Markdown with a short summary at the top and a Sources section citing the labels you used.",
-        f"{task}\n\nProject context:\n{ctx}{consulted}", max_tokens=3500)
+    async with trace.step("draft", f"Write the {_kind(name).split(' (')[0].replace('a ', '', 1)}"):
+        md = await _draft_text(name, task, consulted, model)
+    async with trace.step("check", "Self-check against the brief") as st:
+        check = await self_check(name, task, md, model=model)
+        st["detail"]["blocking"] = check.blocking
+    if not check.passed:
+        async with trace.step("draft", "Repair the draft") as st:
+            md = await _draft_text(name, task, consulted, model, fixes=check.blocking)
+            check = await self_check(name, task, md, model=model)
+            st["detail"]["remaining"] = check.blocking
     arts = [ArtifactOut(type="markdown", title="Implementation plan" if name == "code" else f"{name.title()} deliverable", content=md)]
     if name == "designer":
-        svg = await complete_text("Produce ONE self-contained SVG concept sketch (viewBox 0 0 320 180, no scripts, no external links). Output only the <svg> element.",
-                                  f"{task}\n\nBrief:\n{md[:1500]}", max_tokens=2500)
+        async with trace.step("draft", "Sketch a concept image"):
+            svg = await complete_text("Produce ONE self-contained SVG concept sketch (viewBox 0 0 320 180, no scripts, no external links). Output only the <svg> element.",
+                                      f"{req.task.title}\n\nBrief:\n{md[:1500]}", max_tokens=2500, model=model)
         m = re.search(r"<svg[\s\S]*</svg>", svg)
         if m and not re.search(r"<script|on\w+\s*=|href\s*=\s*[\"']https?:", m.group(0), re.I):
             arts.append(ArtifactOut(type="image", title="Concept sketch", payload={"mime": "image/svg+xml", "svg": m.group(0)}))
     first = next((ln.lstrip("# ").strip() for ln in md.splitlines() if ln.strip()), req.task.title)
-    return RunResponse(summary=first[:300], notes="", artifacts=arts, consultations=state.consultations)
+    open_q = list(dict.fromkeys([*check.open_questions, *[f"Confirm {b}" for b in check.blocking]]))[:6]
+    return RunResponse(summary=first[:300], notes="", artifacts=arts, consultations=state.consultations,
+                       confidence=round(check.confidence * (0.6 if check.blocking else 1.0), 2), open_questions=open_q)
+
+
+async def _run(name: str, req: RunRequest) -> RunResponse:
+    state = _State()
+    usage = begin_usage()
+    trace = Trace(req.execution_id, req.revision, req.callback_url, os.environ.get("INTERNAL_SECRET", ""))
+    if os.environ.get("AGENTS_MODE") == "mock":
+        async with trace.step("draft", "Produce the mock deliverable"):
+            out = _mock_run(name, req, state)
+        out.confidence = 0.8
+        out.open_questions = out.open_questions or (["Who should receive this email?"] if name == "communication" and out.artifacts[0].payload and not out.artifacts[0].payload.get("to") else [])
+    else:
+        out = await asyncio.wait_for(_real_run(name, req, state, trace), timeout=WALL_CLOCK_SECONDS)
+    out.usage, out.steps = usage, trace.steps
+    return out
 
 
 def build_router(require_secret) -> APIRouter:
@@ -267,11 +333,12 @@ def build_router(require_secret) -> APIRouter:
 
     @r.post("/agents/{name}/run", response_model=RunResponse)
     async def run(name: AgentName, req: RunRequest) -> RunResponse:
-        state = _State()
-        if os.environ.get("AGENTS_MODE") == "mock":
-            return _mock_run(name, req, state)
         try:
-            return await _real_run(name, req, state)
+            return await _run(name, req)
+        except asyncio.TimeoutError as e:
+            raise HTTPException(status_code=504, detail=f"agent run exceeded {WALL_CLOCK_SECONDS}s") from e
+        except LimitExceeded as e:
+            raise HTTPException(status_code=422, detail=f"agent run limit: {e}") from e
         except (KeyError, TypeError, ValueError) as e:
             raise HTTPException(status_code=502, detail=f"agent output invalid: {e}") from e
 
