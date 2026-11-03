@@ -104,6 +104,15 @@ class BuildTest(unittest.TestCase):
         self.assertEqual((out[0].additions, out[0].deletions), (1, 1))
         self.assertTrue(out[1].diff.endswith("+test('adds', () => {});\n"))  # newline added to new files
 
+    def test_changes_carry_the_complete_new_file_and_its_mode(self):
+        out = P.build_changes(self.O, [{"path": "src/add.js", "action": "modify", "edits": [{"find": "x - y", "replace": "x + y"}], "content": ""},
+                                       {"path": "test/new.test.js", "action": "create", "edits": [], "content": "t()"}], set(self.O), {"src/add.js": "100755", "test/add.test.js": "120000"})
+        self.assertEqual((out[0].content, out[0].mode), (SRC.replace("x - y", "x + y"), "100755"))
+        self.assertEqual((out[1].content, out[1].mode), ("t()\n", "100644"))
+        self.assertEqual(P.apply_unified(SRC, out[0].diff), out[0].content)               # the diff and the contents are the same change
+        odd = P.build_changes(self.O, [{"path": "test/add.test.js", "action": "modify", "edits": [{"find": "sanity", "replace": "x"}] if False else [{"find": "test(", "replace": "it("}], "content": ""}], set(self.O), {"test/add.test.js": "120000"})
+        self.assertEqual(odd[0].mode, "100644")                                             # symlinks and other modes are never propagated
+
     def test_every_problem_is_reported_at_once_so_the_model_can_fix_them_together(self):
         with self.assertRaises(P.EditError) as cm:
             self.build([{"path": "src/add.js", "action": "modify", "edits": [{"find": "nope", "replace": "x"}]}, {"path": "src/unseen.js", "action": "modify", "edits": [{"find": "a", "replace": "b"}]},

@@ -20,6 +20,7 @@ FILES = {"src/add.js": SRC, "test/sanity.test.js": TEST, "package.json": '{"scri
 REPO = RepoIn(id="r1", full_name="acme/shop-api", default_branch="develop", description="Billing API", index_text="Top level: src/, test/")
 REPO2 = RepoIn(id="r2", full_name="acme/web", default_branch="main")
 TOKEN = "ghs_CLONE_TOKEN_VALUE_123456"
+COMMIT = "c0ffee" * 6 + "abcd"
 
 GOOD = {"summary": "Fix add so it adds", "steps": ["Change the operator", "Add a test"], "risks": ["None"], "tests": ["add(2,3) is 5"], "rollout": "Merge and deploy",
         "changes": [{"path": "src/add.js", "action": "modify", "edits": [{"find": "return x - y;", "replace": "return x + y;"}], "content": ""},
@@ -57,9 +58,10 @@ class RunTest(unittest.IsolatedAsyncioTestCase):
             if tree_error:
                 raise tree_error
             self.tree_args = (pid, owner, name, ref)
-            return {"ref": ref, "truncated": False, "files": [{"path": p, "size": len(t)} for p, t in FILES.items() if not p.startswith(".github")]}
+            return {"ref": ref, "commit": COMMIT, "truncated": False, "files": [{"path": p, "size": len(t), "mode": "100755" if p == "src/add.js" else "100644"} for p, t in FILES.items() if not p.startswith(".github")]}
 
         async def fake_file(pid, owner, name, path, ref):
+            self.read_refs.append(ref)
             if path in bad_files:
                 raise GithubReadError("file_too_large", "too large")
             return {"path": path, "size": len(FILES[path]), "text": FILES[path]}
@@ -78,6 +80,7 @@ class RunTest(unittest.IsolatedAsyncioTestCase):
         async def fake_draft(name, task, consulted, model, fixes=None): return "# Plan\nDo it."
 
         self.picked = False
+        self.read_refs = []
         with mock.patch.object(C, "chat_json", fake_json), mock.patch.object(C, "read_tree", fake_tree), mock.patch.object(C, "read_file", fake_file), \
                 mock.patch.object(C, "verify_change", fake_verify), mock.patch.object(C, "pick_repo", fake_pick), mock.patch.object(C, "clone_token", fake_clone), \
                 mock.patch.object(C, "self_check", fake_check), mock.patch("agents._draft_text", fake_draft), \
@@ -100,6 +103,23 @@ class RunTest(unittest.IsolatedAsyncioTestCase):
         for needle in ("# Code change: Fix add so it adds", "acme/shop-api (base branch `develop`)", "| src/add.js | modified | +1 −1 |", "✔ Verified"):
             self.assertIn(needle, md)
         self.assertEqual(self.tree_args[1:], ("acme", "shop-api", "develop"))
+
+    async def test_everything_is_pinned_to_the_commit_that_was_read(self):
+        out = await self.go()
+        self.assertTrue(self.read_refs and all(r == COMMIT for r in self.read_refs))      # files are read at the commit, not the moving branch
+        self.assertEqual(self.repo_source.commit, COMMIT)                                  # the sandbox verifies that same commit
+        self.assertEqual(out.artifacts[1].payload["base_sha"], COMMIT)                     # and a pull request branches from it
+
+    async def test_the_artifact_carries_the_exact_files_a_pull_request_would_commit(self):
+        out = await self.go()
+        files = {f["path"]: f for f in out.artifacts[1].payload["commit_files"]}
+        self.assertEqual(set(files), {"src/add.js", "test/add.test.js"})
+        self.assertEqual(files["src/add.js"]["content"], SRC.replace("x - y", "x + y"))    # identical to applying the diff
+        self.assertEqual(files["src/add.js"]["mode"], "100755")                            # an executable stays executable
+        self.assertEqual((files["test/add.test.js"]["status"], files["test/add.test.js"]["mode"]), ("added", "100644"))
+        self.assertTrue(files["test/add.test.js"]["content"].endswith("\n"))
+        for f in out.artifacts[1].payload["files"]:                                        # the browser-facing list has no file contents
+            self.assertNotIn("content", f)
 
     async def test_only_files_that_exist_and_were_chosen_are_read_and_listed_in_the_prompt(self):
         await self.go()
