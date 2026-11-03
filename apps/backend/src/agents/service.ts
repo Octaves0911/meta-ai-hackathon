@@ -80,14 +80,22 @@ export class AgentService {
 
   /** Text of what the agent produced at a revision (Markdown reports, email drafts): the starting point for a revision and context for chat. */
   async currentOutput(executionId: string, revision: number): Promise<string> {
-    const { rows } = await this.db.query("select type, title, payload from execution_artifacts where execution_id = $1 and revision = $2 and type in ('markdown', 'email_draft', 'table') order by type, title", [executionId, revision]);
+    const { rows } = await this.db.query("select type, title, payload from execution_artifacts where execution_id = $1 and revision = $2 and type in ('markdown', 'email_draft', 'table', 'diff') order by type, title", [executionId, revision]);
     const parts = rows.map((a) => {
       const p = a.payload ?? {};
       if (a.type === 'markdown') return String(p.content ?? '');
       if (a.type === 'email_draft') return `Subject: ${p.subject ?? ''}\nTo: ${(p.to ?? []).join(', ')}\n\n${p.body ?? ''}`;
+      if (a.type === 'diff') return `Diff (${p.repo ?? ''}):\n${String(p.diff ?? '').slice(0, 8000)}`;
       return `${a.title ?? 'Table'}: ${JSON.stringify({ columns: p.columns, rows: p.rows })}`;
     });
     return parts.join('\n\n---\n\n').slice(0, 11_500);
+  }
+
+  /** The reviewer chose a repository for a Code task that could not decide: run it again with that choice. */
+  async chooseRepo(executionId: string, repoId: string) {
+    await this.db.query("update executions set repo_id = $2, status = 'routed', stage_plan = stage_plan - 'repoChoice', updated_at = now() where id = $1", [executionId, repoId]);
+    await enqueue(this.db, 'agent.run', { executionId });
+    await this.notifyUpdate(executionId);
   }
 
   async overCap(projectId: string): Promise<boolean> { const cap = dailyCapUsd(); return cap > 0 && (await this.spentToday(projectId)) >= cap; }
@@ -152,13 +160,20 @@ export class AgentService {
     }
 
     await this.db.query('delete from execution_steps where execution_id = $1 and revision = $2', [e.id, e.revision]); // a retry starts a fresh trace
+    // Code work also needs the project's linked repositories (and the reviewer's choice, if they made one).
+    let code: object = {};
+    if (e.agent === 'code') {
+      const { rows: repos } = await this.db.query('select id, owner, name, default_branch, description, github_description, language, languages, index_text from project_repos where project_id = $1 order by created_at', [e.project_id]);
+      code = { project_id: e.project_id, repo_id: e.repo_id ?? null,
+        repos: repos.map((r) => ({ id: r.id, full_name: `${r.owner}/${r.name}`, default_branch: r.default_branch, description: r.description, github_description: r.github_description, language: r.language, languages: r.languages ?? {}, index_text: r.index_text })) };
+    }
     const res = await fetch(`${aiUrl()}/agents/${e.agent}/run`, {
       method: 'POST', headers: headers(),
-      body: JSON.stringify({ ...brief, feedback, revision: e.revision, execution_id: e.id, callback_url: selfUrl() }),
-      signal: AbortSignal.timeout(180_000),
+      body: JSON.stringify({ ...brief, ...code, feedback, revision: e.revision, execution_id: e.id, callback_url: selfUrl() }),
+      signal: AbortSignal.timeout(e.agent === 'code' ? 900_000 : 180_000), // a Code run waits for sandbox installs and test runs
     });
     if (!res.ok) throw new Error(`agent service responded ${res.status}`);
-    const out = (await res.json()) as { summary: string; notes: string; artifacts: any[]; consultations: any[]; confidence?: number | null; open_questions?: string[]; usage?: object; steps?: StepIn[] };
+    const out = (await res.json()) as { summary: string; notes: string; artifacts: any[]; consultations: any[]; confidence?: number | null; open_questions?: string[]; usage?: object; steps?: StepIn[]; repo_id?: string | null; repo_choice?: object | null };
     for (const st of out.steps ?? []) await this.recordStep(e.id, e.revision, st).catch(() => undefined);
 
     const c = await this.db.connect();
@@ -185,6 +200,11 @@ export class AgentService {
         await c.query('insert into agent_consultations(execution_id, from_agent, to_agent, question, answer, depth) values ($1,$2,$3,$4,$5,$6)',
           [e.id, k.from_agent, k.to_agent, k.question, k.answer, Math.min(Math.max(k.depth, 1), 2)]);
       }
+      if (out.repo_id) await c.query('update executions set repo_id = (select id from project_repos where id = $2 and project_id = $3) where id = $1', [e.id, out.repo_id, e.project_id]);
+      // Several repositories fit: keep the candidates so the reviewer can choose (and clear them once a repository is settled).
+      await c.query(out.repo_choice
+        ? "update executions set stage_plan = coalesce(stage_plan, '{}'::jsonb) || jsonb_build_object('repoChoice', $2::jsonb) where id = $1"
+        : "update executions set stage_plan = stage_plan - 'repoChoice' where id = $1 and stage_plan is not null", out.repo_choice ? [e.id, JSON.stringify(out.repo_choice)] : [e.id]);
       await c.query(
         `update executions set status = 'awaiting_review', summary = $2, notes = $3, confidence = $4, open_questions = $5, usage = $6, updated_at = now() where id = $1`,
         [e.id, out.summary, out.notes || null, out.confidence ?? null, JSON.stringify((out.open_questions ?? []).slice(0, 8)), out.usage ? JSON.stringify(out.usage) : null]);

@@ -1,16 +1,16 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { ChatBody, EmailDraftBody, type EmailAttachments, MAX_CHAT_MESSAGES, MAX_REVISIONS, RerunBody, ReviewBody, RunWithBody, SendEmailBody, type ExecutionDetail, type ExecutionMessage, type ExecutionSummary, type ExecutionUsage, type ReviewCounts } from '@meetpilot/shared';
+import { ChatBody, ChooseRepoBody, EmailDraftBody, type EmailAttachments, MAX_CHAT_MESSAGES, MAX_REVISIONS, RerunBody, ReviewBody, RunWithBody, SendEmailBody, type ExecutionDetail, type ExecutionMessage, type ExecutionSummary, type ExecutionUsage, type ReviewCounts } from '@meetpilot/shared';
 import { connector } from '../services/connector.js';
 import { requireUser, type AuthUser } from '../app.js';
 import { HttpError } from '../errors.js';
 import { TASK_SELECT, toTask } from '../insights/tasksFormat.js';
 import { AttachmentError, candidatesFor, chipsFor, filesForSend, invalidAttachmentIds } from '../agents/attachments.js';
 
-const SUMMARY_SELECT = `select e.*, t.title as task_title, t.meeting_id, m.title as meeting_title, to_char(t.due_date,'YYYY-MM-DD') as due,
+const SUMMARY_SELECT = `select e.*, pr.owner as repo_owner, pr.name as repo_name, t.title as task_title, t.meeting_id, m.title as meeting_title, to_char(t.due_date,'YYYY-MM-DD') as due,
     t.assigned_to, t.project_id, t.description as task_description, p.name as project_name, ua.username as assignee_name, e.reviewer_id, ur.username as reviewer_name
-  from executions e join tasks t on t.id = e.task_id join meetings m on m.id = t.meeting_id join projects p on p.id = t.project_id
+  from executions e join tasks t on t.id = e.task_id join meetings m on m.id = t.meeting_id join projects p on p.id = t.project_id left join project_repos pr on pr.id = e.repo_id
   left join users ua on ua.id = t.assigned_to left join users ur on ur.id = e.reviewer_id`;
 
 const toSummary = (r: any): ExecutionSummary => ({
@@ -19,9 +19,10 @@ const toSummary = (r: any): ExecutionSummary => ({
   reviewer: r.reviewer_id ? { id: r.reviewer_id, username: r.reviewer_name } : null,
   assignee: r.assigned_to ? { id: r.assigned_to, username: r.assignee_name } : null, dueDate: r.due, updatedAt: r.updated_at,
   confidence: r.confidence ?? null, routeConfidence: r.route_confidence ?? null, stagePlan: r.stage_plan ?? null, approvedChoice: r.approved_choice ?? null,
+  repo: r.repo_id ? { id: r.repo_id, fullName: `${r.repo_owner}/${r.repo_name}` } : null,
 });
 
-const toUsage = (u: any): ExecutionUsage | null => u ? ({ calls: u.calls ?? 0, searches: u.searches ?? 0, promptTokens: u.prompt_tokens ?? 0, completionTokens: u.completion_tokens ?? 0, costUsd: u.cost_usd ?? 0, models: u.models ?? [] }) : null;
+const toUsage = (u: any): ExecutionUsage | null => u ? ({ calls: u.calls ?? 0, searches: u.searches ?? 0, sandboxCostUsd: u.sandbox_cost_usd ?? 0, promptTokens: u.prompt_tokens ?? 0, completionTokens: u.completion_tokens ?? 0, costUsd: u.cost_usd ?? 0, models: u.models ?? [] }) : null;
 
 export async function executionRoutes(app: FastifyInstance) {
   const uuid = (id: string) => { if (!z.string().uuid().safeParse(id).success) throw new HttpError(404, 'not_found', 'not found'); };
@@ -115,6 +116,19 @@ export async function executionRoutes(app: FastifyInstance) {
     if (e.reviewer_id !== me.id) throw new HttpError(403, 'forbidden', 'only the reviewer can run an agent on this task');
     const { agent } = RunWithBody.parse(req.body);
     if (!(await app.agents.runWith(e.id, agent))) throw new HttpError(409, 'not_skipped', 'this task was already routed to an agent');
+    return reply.status(202).send({ ok: true });
+  });
+
+  /** Code work with several plausible repositories: the reviewer picks one and the agent continues. */
+  app.post<{ Params: { id: string } }>('/executions/:id/repo', async (req, reply) => {
+    const me = await requireUser(app, req);
+    const e = await load(req.params.id, me);
+    if (e.reviewer_id !== me.id) throw new HttpError(403, 'forbidden', 'only the reviewer can choose the repository');
+    const { repoId } = ChooseRepoBody.parse(req.body);
+    if (e.agent !== 'code' || e.status !== 'awaiting_review' || !e.stage_plan?.repoChoice) throw new HttpError(409, 'not_choosing', 'this work is not waiting for a repository choice');
+    const { rows } = await app.db.query('select id from project_repos where id = $1 and project_id = $2', [repoId, e.project_id]);
+    if (!rows[0]) throw new HttpError(404, 'not_found', 'that repository is not linked to this project');
+    await app.agents.chooseRepo(e.id, repoId);
     return reply.status(202).send({ ok: true });
   });
 
