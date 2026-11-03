@@ -9,7 +9,7 @@ const Services = z.array(z.enum(['gmail', 'drive'])).min(1).max(2);
 const uuid = z.string().uuid();
 
 export function buildApp(db: pg.Pool, connector = new Connector(db)) {
-  const app = Fastify({ logger: process.env.NODE_ENV !== 'test' });
+  const app = Fastify({ logger: process.env.NODE_ENV !== 'test', bodyLimit: 16 * 1024 * 1024 }); // internal only (shared secret); room for 10 MB of attachments as base64
 
   // Every route except /health needs the shared secret; this service fails closed without one (docs/06).
   app.addHook('onRequest', async (req, reply) => {
@@ -32,6 +32,7 @@ export function buildApp(db: pg.Pool, connector = new Connector(db)) {
   app.post('/gmail/send', async (req) => connector.sendMail(z.object({
     projectId: uuid, userId: uuid, to: z.array(z.string().max(320)).max(10), cc: z.array(z.string().max(320)).max(10).optional(),
     subject: z.string().max(1000), body: z.string().max(200_000), threadId: z.string().max(200).nullish(), inReplyTo: z.string().max(500).nullish(), references: z.string().max(2000).nullish(),
+    attachments: z.array(z.object({ filename: z.string().max(120), mime: z.string().max(100), data_b64: z.string().max(14_500_000) })).max(5).optional(),
   }).parse(req.body)));
   app.get('/connections', async (req) => { const q = z.object({ projectId: uuid, userId: uuid }).parse(req.query); return connector.list(q.projectId, q.userId); });
   app.put<{ Params: { id: string } }>('/connections/:id', async (req, reply) => {
