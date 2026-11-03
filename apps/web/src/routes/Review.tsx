@@ -79,7 +79,7 @@ export function Review() {
             <div><dt>Due</dt><dd>{d.dueDate ?? '—'}</dd></div>
             <div><dt>Revision</dt><dd>{d.revision} of {MAX_REVISIONS}</dd></div>
             {d.confidence != null && <div><dt>Confidence</dt><dd><ConfidencePill value={d.confidence} /></dd></div>}
-            {d.usage && d.usage.calls > 0 && <div><dt>Cost</dt><dd title={`${d.usage.promptTokens + d.usage.completionTokens} tokens · ${d.usage.models.join(', ')}`}>{usd(d.usage.costUsd)}</dd></div>}
+            {d.usage && d.usage.calls > 0 && <div><dt>Cost</dt><dd title={`${d.usage.promptTokens + d.usage.completionTokens} tokens${d.usage.searches ? ` · ${d.usage.searches} web search${d.usage.searches > 1 ? 'es' : ''}` : ''} · ${d.usage.models.join(', ')}`}>{usd(d.usage.costUsd)}</dd></div>}
           </dl>
         </div>
 

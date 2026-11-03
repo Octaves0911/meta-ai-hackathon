@@ -4,6 +4,7 @@ import { HtmlViewer } from './HtmlViewer';
 import { ImageViewer } from './ImageViewer';
 import { MarkdownViewer } from './MarkdownViewer';
 import { PdfViewer } from './PdfViewer';
+import { SourcesList } from './SourcesList';
 import { TableViewer } from './TableViewer';
 
 const safeUrl = (u: string | null | undefined) => (u && /^https?:\/\//i.test(u) ? u : null);
@@ -20,7 +21,8 @@ export function ArtifactView({ artifact, executionId, editable, onSaved }: { art
     case 'table': return <TableViewer payload={a.payload} />;
     case 'video': return safeUrl(a.uri) ? <video controls src={safeUrl(a.uri)!} style={{ width: '100%' }} /> : <p className="muted">Video not available.</p>;
     case 'diff': return <pre className="diff"><code>{a.payload?.diff ?? ''}</code></pre>;
-    case 'link': return safeUrl(a.uri) ? <a href={safeUrl(a.uri)!} target="_blank" rel="noreferrer noopener">{a.title ?? a.uri}</a> : <p className="muted">{a.title}</p>;
+    case 'link': if (Array.isArray(a.payload?.items)) return <SourcesList payload={a.payload} />;
+      return safeUrl(a.uri) ? <a href={safeUrl(a.uri)!} target="_blank" rel="noreferrer noopener">{a.title ?? a.uri}</a> : <p className="muted">{a.title}</p>;
     default: return <p className="muted">{a.title ?? 'File'}{safeUrl(a.uri) && <> — <a href={safeUrl(a.uri)!} target="_blank" rel="noreferrer noopener">open</a></>}</p>;
   }
 }
