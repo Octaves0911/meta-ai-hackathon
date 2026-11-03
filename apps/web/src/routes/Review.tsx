@@ -2,6 +2,7 @@ import { ArrowLeft, Bot, CheckCircle2, GitBranch, Hand, MessageCircleMore, Rotat
 import { useCallback, useEffect, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
 import { MAX_REVISIONS, type ExecutionDetail } from '@meetpilot/shared';
+import { AgentTrace, ConfidencePill, NeedsInput, RunWith, StagePlan, usd } from '../components/AgentInsights';
 import { AppShell } from '../components/AppShell';
 import { SendEmailPanel } from '../components/SendEmailPanel';
 import { ArtifactView } from '../components/viewers/ArtifactView';
@@ -27,8 +28,12 @@ export function Review() {
     if (!user) return;
     const s = getSocket(user.username);
     s.on('execution:update', load);
-    return () => { s.off('execution:update', load); };
-  }, [user, load]);
+    // Live trace: reload (debounced) as the agent reports each step.
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const onStep = (p: { id: string }) => { if (p.id !== id) return; clearTimeout(t); t = setTimeout(load, 300); };
+    s.on('execution:step', onStep);
+    return () => { s.off('execution:update', load); s.off('execution:step', onStep); clearTimeout(t); };
+  }, [user, load, id]);
   // Poll while an agent is working, in case a push is missed.
   useEffect(() => {
     if (!d || !BUSY.has(d.status)) return;
@@ -71,12 +76,19 @@ export function Review() {
             <div><dt>Reviewer</dt><dd className="row" style={{ gap: 8 }}>{d.reviewer ? <><Avatar name={d.reviewer.username} size="sm" />{d.reviewer.username}</> : '—'}</dd></div>
             <div><dt>Due</dt><dd>{d.dueDate ?? '—'}</dd></div>
             <div><dt>Revision</dt><dd>{d.revision} of {MAX_REVISIONS}</dd></div>
+            {d.confidence != null && <div><dt>Confidence</dt><dd><ConfidencePill value={d.confidence} /></dd></div>}
+            {d.usage && d.usage.calls > 0 && <div><dt>Cost</dt><dd title={`${d.usage.promptTokens + d.usage.completionTokens} tokens · ${d.usage.models.join(', ')}`}>{usd(d.usage.costUsd)}</dd></div>}
           </dl>
         </div>
 
+        <StagePlan plan={d.stagePlan} />
+        <RunWith d={d} onDone={load} />
         {d.status === 'skipped_human' && <div className="note-inline info" role="status"><Hand size={18} /> <span><strong>Left for a human.</strong> {d.routeReason}</span></div>}
         {BUSY.has(d.status) && <div className="note-inline info" role="status"><span className="spinner" /> The {d.agent} agent is {d.status === 'changes_requested' ? 'redoing the work with your feedback' : 'working on this'}…</div>}
         {d.status === 'failed' && <div className="card" role="alert" style={{ borderColor: 'var(--danger)' }}><strong>The agent could not finish.</strong> <span className="muted">{d.error}</span><div style={{ marginTop: 10 }}><button onClick={retry}><RotateCcw size={15} /> Retry</button></div></div>}
+
+        {d.status === 'awaiting_review' && <NeedsInput questions={d.openQuestions} />}
+        <AgentTrace steps={d.steps} busy={BUSY.has(d.status)} />
 
         {d.summary && <div className="card" style={{ marginBottom: 16 }}><h3>Summary</h3><p style={{ marginBottom: 4 }}>{d.summary}</p>{d.notes && <p className="muted" style={{ margin: 0 }}>{d.notes}</p>}</div>}
 

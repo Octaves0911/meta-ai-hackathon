@@ -255,6 +255,7 @@ Header: agent · status · **Confidence** · cost · revision. Top card: **Needs
 
 ## 5. Build order (each = branch, tests, live check, merge on your OK)
 0. `feat/agent-core` — gateway v2, brief, router v2, trace, quality gate, limits, review header
+   *Built (branch `feat/agent-core`): schema-constrained JSON + usage/cost + per-agent models, task brief (transcript window, decisions with history, neighbours, prior work), model router with confidence + override + web-page-only design→code plan, quality gate (self-check, one repair, deterministic date/amount fact check), live step trace, confidence/open questions/cost on the review page, daily spend cap. Deferred to their own steps: Responses API + web search (research), multi-stage hand-off execution (designer/code).*
 0a. `feat/review-inbox` — Reviews page, in-app PDF/HTML/diff viewers, Reject verdict, notifications
 0b. `feat/agent-files` — `apps/ai/files/` PDF builder (spec → bytes; DOCX/PPTX/XLSX later), `file` artifact + storage, download/preview, golden tests
 0c. `feat/review-chat` — live agent chat in the review panel (ask / change / clarify), Apply & rerun, partial reruns, revision diff
@@ -283,4 +284,5 @@ Header: agent · status · **Confidence** · cost · revision. Top card: **Needs
 11b. ✅ Designer output goes to Code **only** for web-page design tasks (§1.9).
 12. ✅ **Code agent**: all generated code runs and is tested only in a Modal sandbox; commit + PR only from verified results after approval (§2.5).
 13. ✅ Features outside the agents: owner-managed project repos with an agent repo picker (§1.10); a Reviews inbox with in-site PDF/design viewing and approve/reject (§1.11); live chat with the agent during review with Apply & rerun (§1.11).
-14. **Still open**: Designer PDF from mockups (optional headless browser vs simple drawing), Fireworks in the first pass, deployment models, auto-run policy, spend cap.
+14. ✅ **Defaults adopted (2026-11-03)**: Designer = HTML mockups, PDF via optional headless browser (degrades to brief-only note), Fireworks deferred; models = Wonder for Research + Code, Spark for the rest (dev: contributor tier); auto-run all routed tasks, with the per-run limits of §1.6; daily spend cap default **US$5 per project** (configurable); PR creation is a deliberate click after approval.
+15. **Still open**: Modal account/token for the live sandbox check, GitHub App vs fine-grained token, Research search provider (Meta `web_search` assumed), Communication voice/channels/variants/language.
