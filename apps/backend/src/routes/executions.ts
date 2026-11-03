@@ -1,12 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { ChatBody, ChooseRepoBody, EmailDraftBody, type EmailAttachments, MAX_CHAT_MESSAGES, MAX_REVISIONS, RerunBody, ReviewBody, RunWithBody, SendEmailBody, type ExecutionDetail, type ExecutionMessage, type ExecutionSummary, type ExecutionUsage, type ReviewCounts } from '@meetpilot/shared';
+import { ChatBody, ChooseRepoBody, EmailDraftBody, PrBody, type PrState, type EmailAttachments, MAX_CHAT_MESSAGES, MAX_REVISIONS, RerunBody, ReviewBody, RunWithBody, SendEmailBody, type ExecutionDetail, type ExecutionMessage, type ExecutionSummary, type ExecutionUsage, type ReviewCounts } from '@meetpilot/shared';
 import { connector } from '../services/connector.js';
 import { requireUser, type AuthUser } from '../app.js';
 import { HttpError } from '../errors.js';
 import { TASK_SELECT, toTask } from '../insights/tasksFormat.js';
 import { AttachmentError, candidatesFor, chipsFor, filesForSend, invalidAttachmentIds } from '../agents/attachments.js';
+import { branchName, defaultPrBody, prChecks } from '../agents/pr.js';
 
 const SUMMARY_SELECT = `select e.*, pr.owner as repo_owner, pr.name as repo_name, t.title as task_title, t.meeting_id, m.title as meeting_title, to_char(t.due_date,'YYYY-MM-DD') as due,
     t.assigned_to, t.project_id, t.description as task_description, p.name as project_name, ua.username as assignee_name, e.reviewer_id, ur.username as reviewer_name
@@ -64,6 +65,29 @@ export async function executionRoutes(app: FastifyInstance) {
     return { needsReview: rows[0].needs, working: rows[0].working };
   });
 
+  /** The verified file contents a pull request commits stay on the server; the browser only needs the diff. */
+  const forBrowser = (a: any) => (a.type === 'diff' && a.payload?.commit_files ? { ...a, payload: (({ commit_files: _drop, ...rest }) => rest)(a.payload) } : a);
+
+  /** Is this approved code change eligible for a pull request, and what would it say? Only for code work; everyone who can see the review sees the state. */
+  async function prStateFor(e: any, arts: any[]): Promise<PrState | null> {
+    if (e.agent !== 'code') return null;
+    const diff = arts.find((a) => a.type === 'diff' && a.revision === e.revision)?.payload ?? null;
+    const verification = arts.find((a) => a.type === 'verification' && a.revision === e.revision)?.payload ?? null;
+    const [repo, gh, pr] = await Promise.all([
+      e.repo_id ? app.db.query('select owner, name, default_branch, can_push from project_repos where id = $1', [e.repo_id]).then((r) => r.rows[0] ?? null) : Promise.resolve(null),
+      connector<{ connected: boolean }>(`/github/status?projectId=${e.project_id}`).catch(() => ({ connected: false })),
+      app.db.query('select * from pull_requests where execution_id = $1 and revision = $2', [e.id, e.revision]).then((r) => r.rows[0] ?? null),
+    ]);
+    const files = Array.isArray(diff?.files) ? diff.files : [];
+    const checks = prChecks({ status: e.status, verification, repoId: repo ? e.repo_id : null, canPush: repo ? !!repo.can_push : null, githubConnected: !!gh.connected,
+      hasFiles: Array.isArray(diff?.commit_files) && diff.commit_files.length > 0, baseSha: diff?.base_sha ?? null, alreadyOpened: !!pr });
+    return {
+      allowed: checks.every((c) => c.ok), checks, files, repo: repo ? `${repo.owner}/${repo.name}` : null, baseBranch: diff?.branch ?? repo?.default_branch ?? null,
+      branch: branchName(e.task_title, e.id, e.revision), defaultTitle: String(e.task_title).slice(0, 200), defaultBody: defaultPrBody({ summary: e.summary, files, verification }),
+      pullRequest: pr ? { number: pr.number, url: pr.url, branch: pr.branch, baseBranch: pr.base_branch, draft: pr.draft, status: pr.status, createdAt: pr.created_at } : null,
+    };
+  }
+
   app.get<{ Params: { id: string }; Querystring: { revision?: string } }>('/executions/:id', async (req): Promise<ExecutionDetail> => {
     const me = await requireUser(app, req);
     const e = await load(req.params.id, me);
@@ -88,9 +112,9 @@ export async function executionRoutes(app: FastifyInstance) {
       };
     }
     return {
-      ...toSummary(e), send, task: toTask(task.rows[0]), notes: e.notes, openQuestions: Array.isArray(e.open_questions) ? e.open_questions : [], usage: toUsage(e.usage),
+      ...toSummary(e), send, pr: await prStateFor(e, arts.rows), task: toTask(task.rows[0]), notes: e.notes, openQuestions: Array.isArray(e.open_questions) ? e.open_questions : [], usage: toUsage(e.usage),
       steps: steps.rows.map((r) => ({ seq: r.seq, revision: r.revision, kind: r.kind, label: r.label, detail: r.detail ?? {}, status: r.status, startedAt: r.started_at, endedAt: r.ended_at })),
-      artifacts: arts.rows, canReview: e.reviewer_id === me.id && e.status === 'awaiting_review',
+      artifacts: arts.rows.map(forBrowser), canReview: e.reviewer_id === me.id && e.status === 'awaiting_review',
       consultations: cons.rows.map((c) => ({ id: c.id, fromAgent: c.from_agent, toAgent: c.to_agent, question: c.question, answer: c.answer, depth: c.depth })),
       reviews: revs.rows.map((r) => ({ revision: r.revision, verdict: r.verdict, comment: r.comment, lineComments: r.line_comments, reviewer: r.username, createdAt: r.created_at })),
     };
@@ -130,6 +154,51 @@ export async function executionRoutes(app: FastifyInstance) {
     if (!rows[0]) throw new HttpError(404, 'not_found', 'that repository is not linked to this project');
     await app.agents.chooseRepo(e.id, repoId);
     return reply.status(202).send({ ok: true });
+  });
+
+  /** Opens a pull request from an approved, verified code change. A deliberate, confirmed click: never automatic, never to the default branch, never merged. */
+  app.post<{ Params: { id: string } }>('/executions/:id/pr', async (req, reply) => {
+    const me = await requireUser(app, req);
+    const body = PrBody.parse(req.body);
+    const e = await load(req.params.id, me);
+    if (e.reviewer_id !== me.id) throw new HttpError(403, 'forbidden', 'only the reviewer can open a pull request');
+    if (e.agent !== 'code') throw new HttpError(400, 'invalid_request', 'this work has no code change');
+    const { rows: arts } = await app.db.query('select type, revision, payload from execution_artifacts where execution_id = $1 and revision = $2 and type in (\'diff\', \'verification\')', [e.id, e.revision]);
+    const st = await prStateFor(e, arts);
+    const failed = st?.checks.filter((c) => !c.ok) ?? [];
+    if (!st || failed.length) throw new HttpError(409, 'pr_not_allowed', `a pull request cannot be opened yet: ${failed.map((c) => c.detail ?? c.label).join(' ')}`);
+    const diff = arts.find((a) => a.type === 'diff')!.payload;
+    const { rows: repoRows } = await app.db.query('select owner, name from project_repos where id = $1', [e.repo_id]);
+    const repo = repoRows[0];
+    const title = body.title ?? st.defaultTitle, prBody = body.body ?? st.defaultBody;
+    let branch = st.branch;
+    // Claim first: the unique (execution, revision) makes a double click, a retry or a second tab safe.
+    const claim = await app.db.query(
+      `insert into pull_requests(execution_id, revision, repo_id, repo_full_name, base_branch, base_sha, branch, draft, created_by) values ($1,$2,$3,$4,$5,$6,$7,$8,$9) on conflict do nothing returning id`,
+      [e.id, e.revision, e.repo_id, `${repo.owner}/${repo.name}`, diff.branch, diff.base_sha, branch, body.draft, me.id]);
+    if (!claim.rows[0]) throw new HttpError(409, 'already_opened', 'a pull request was already opened (or is being opened) for this change');
+    const send = (b: string) => connector<{ number: number; url: string; branch: string; headSha: string }>('/github/pr', { method: 'POST', json: {
+      projectId: e.project_id, owner: repo.owner, name: repo.name, baseBranch: diff.branch, baseSha: diff.base_sha, branch: b, title, body: prBody, draft: body.draft,
+      message: `${title}\n\nPrepared by a MeetPilot agent and approved by a reviewer in MeetPilot.`,
+      files: diff.commit_files.map((f: any) => ({ path: f.path, content: f.content, mode: f.mode })) } });
+    try {
+      let r;
+      try { r = await send(branch); }
+      catch (err) { // an earlier attempt that failed half-way can have left the branch behind: take a fresh name once
+        if (err instanceof HttpError && err.code === 'branch_exists') { branch = `${branch}-${Math.random().toString(36).slice(2, 6)}`; r = await send(branch); } else throw err;
+      }
+      await app.db.query("update pull_requests set number = $2, url = $3, head_sha = $4, branch = $5, status = 'open' where id = $1", [claim.rows[0].id, r.number, r.url, r.headSha, branch]);
+      app.analytics.track('pr_created', { kind: body.draft ? 'draft' : 'ready' }, { userId: me.id, projectId: e.project_id, meetingId: e.meeting_id });
+      emitUpdate(e, 'approved');
+      return reply.status(201).send({ number: r.number, url: r.url, branch, draft: body.draft });
+    } catch (err) {
+      if (err instanceof HttpError && err.code === 'connector_unavailable') { // we cannot tell whether GitHub got it: keep the claim so a blind retry cannot open a second one
+        await app.db.query("update pull_requests set status = 'unconfirmed' where id = $1", [claim.rows[0].id]);
+        throw new HttpError(502, 'pr_unconfirmed', "We couldn't confirm whether the pull request was opened. Check the repository on GitHub before trying again.");
+      }
+      await app.db.query('delete from pull_requests where id = $1', [claim.rows[0].id]); // definitely not opened: allow a retry
+      throw err;
+    }
   });
 
   /** Live progress from the AI service (shared secret, not a user). */
