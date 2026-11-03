@@ -49,7 +49,7 @@ ok('"all" list shows pending reviews first, then work left for a human', all.len
 
 // detail + typed deliverables + collaboration
 const dDesign = (await api(`/executions/${design.id}`, 'rita')).body;
-ok('designer: brief + image, consulted marketing', dDesign.artifacts.some((a) => a.type === 'markdown') && dDesign.artifacts.some((a) => a.type === 'image' && /<svg/.test(a.payload.svg)) && dDesign.consultations.some((c) => c.fromAgent === 'designer' && c.toAgent === 'marketing' && c.depth <= 2), dDesign);
+ok('designer: brief, two sandboxable HTML directions (A and B), and a table, consulting marketing', dDesign.artifacts.some((a) => a.type === 'markdown') && ['A', 'B'].every((d) => dDesign.artifacts.some((a) => a.type === 'html' && a.payload.direction === d && /<html/.test(a.payload.html))) && dDesign.consultations.some((c) => c.fromAgent === 'designer' && c.toAgent === 'marketing'), dDesign.artifacts.map((a) => a.type));
 const dComm = (await api(`/executions/${comm.id}`, 'rita')).body;
 const draft = dComm.artifacts.find((a) => a.type === 'email_draft');
 ok('communication: email draft flags missing recipients (no invented addresses)', draft && draft.payload.to.length === 0 && draft.payload.missing_recipients === true, draft);
@@ -133,6 +133,15 @@ ok('owner saves a brand note; it shows on the project', (await api(`/projects/${
 ok('members cannot change it; too long is refused', [403, 404].includes((await api(`/projects/${P.id}/settings`, 'dev', 'PATCH', { brandNote: 'x' })).status) && (await api(`/projects/${P.id}/settings`, 'rita', 'PATCH', { brandNote: 'x'.repeat(1501) })).status === 400);
 ok('changing the web switch leaves the note alone, and a blank note clears it', (await api(`/projects/${P.id}/settings`, 'rita', 'PATCH', { noExternalLookups: false })).body.brandNote === note
   && (await api(`/projects/${P.id}/settings`, 'rita', 'PATCH', { brandNote: '   ' })).body.brandNote === null);
+
+// design work: approving means choosing direction A or B
+const noChoice = await api(`/executions/${design.id}/review`, 'rita', 'POST', { verdict: 'approve' });
+ok('approving a two-direction design needs a choice', noChoice.status === 400 && noChoice.body.error.code === 'choose_direction', noChoice.body);
+ok('a direction that was not offered is refused', (await api(`/executions/${design.id}/review`, 'rita', 'POST', { verdict: 'approve', choice: 'C' })).status === 400);
+ok('a choice cannot ride on a rejection or changes request', (await api(`/executions/${design.id}/review`, 'rita', 'POST', { verdict: 'changes', choice: 'A', comment: 'x' })).status === 400);
+ok('approve with direction B', (await api(`/executions/${design.id}/review`, 'rita', 'POST', { verdict: 'approve', choice: 'B' })).status === 204);
+const chosen = (await api(`/executions/${design.id}`, 'rita')).body;
+ok('the chosen direction is recorded and shown', chosen.approvedChoice === 'B' && chosen.status === 'approved', chosen.approvedChoice);
 
 // live chat with the agent, then Apply & rerun
 const t2 = (await db.query("insert into tasks(meeting_id, project_id, title, description, finalized, assigned_to) values ($1,$2,'Research the market', 'Dev will research the market', true, $3) returning id", [M, P.id, id('dev')])).rows[0].id;

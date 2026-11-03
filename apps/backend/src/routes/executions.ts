@@ -18,7 +18,7 @@ const toSummary = (r: any): ExecutionSummary => ({
   agent: r.agent, status: r.status, revision: r.revision, summary: r.summary, error: r.error, routeReason: r.route_reason,
   reviewer: r.reviewer_id ? { id: r.reviewer_id, username: r.reviewer_name } : null,
   assignee: r.assigned_to ? { id: r.assigned_to, username: r.assignee_name } : null, dueDate: r.due, updatedAt: r.updated_at,
-  confidence: r.confidence ?? null, routeConfidence: r.route_confidence ?? null, stagePlan: r.stage_plan ?? null,
+  confidence: r.confidence ?? null, routeConfidence: r.route_confidence ?? null, stagePlan: r.stage_plan ?? null, approvedChoice: r.approved_choice ?? null,
 });
 
 const toUsage = (u: any): ExecutionUsage | null => u ? ({ calls: u.calls ?? 0, searches: u.searches ?? 0, promptTokens: u.prompt_tokens ?? 0, completionTokens: u.completion_tokens ?? 0, costUsd: u.cost_usd ?? 0, models: u.models ?? [] }) : null;
@@ -136,14 +136,14 @@ export async function executionRoutes(app: FastifyInstance) {
   });
 
   /** Records a verdict and moves the execution on: approve completes the task, reject hands it back, changes starts a new revision. */
-  async function applyReview(e: any, me: AuthUser, body: { verdict: 'approve' | 'changes' | 'reject'; comment?: string; lineComments?: unknown[] }) {
+  async function applyReview(e: any, me: AuthUser, body: { verdict: 'approve' | 'changes' | 'reject'; comment?: string; lineComments?: unknown[]; choice?: 'A' | 'B' }) {
     const c = await app.db.connect();
     try {
       await c.query('begin');
       await c.query('insert into execution_reviews(execution_id, revision, reviewer_id, verdict, comment, line_comments) values ($1,$2,$3,$4,$5,$6)',
         [e.id, e.revision, me.id, body.verdict, body.comment ?? null, body.lineComments ? JSON.stringify(body.lineComments) : null]);
       if (body.verdict === 'approve') {
-        await c.query("update executions set status = 'approved', updated_at = now() where id = $1", [e.id]);
+        await c.query("update executions set status = 'approved', approved_choice = $2, updated_at = now() where id = $1", [e.id, body.choice ?? null]);
         await c.query("update tasks set status = 'done' where id = $1", [e.task_id]);
         // Only approved files can be attached to an email or shared on (docs/09 §1.8).
         await c.query(`update execution_artifacts set payload = payload || '{"attachable": true}'::jsonb where execution_id = $1 and revision = $2 and type in ('pdf', 'file')`, [e.id, e.revision]);
@@ -174,6 +174,13 @@ export async function executionRoutes(app: FastifyInstance) {
     if (e.reviewer_id !== me.id) throw new HttpError(403, 'forbidden', 'only the reviewer can review this work');
     if (e.status !== 'awaiting_review') throw new HttpError(409, 'not_reviewable', 'this work is not waiting for review');
     if (body.verdict === 'reject' && !body.comment) throw new HttpError(400, 'invalid_request', 'say why you are rejecting this work');
+    if (body.verdict === 'approve') {
+      // Design work with two directions: approving means choosing one; the choice is what later stages build on.
+      const { rows: dirs } = await app.db.query("select payload->>'direction' as d from execution_artifacts where execution_id = $1 and revision = $2 and type = 'html'", [e.id, e.revision]);
+      const offered = new Set(dirs.map((r) => r.d).filter(Boolean));
+      if (offered.size >= 2 && !body.choice) throw new HttpError(400, 'choose_direction', 'choose direction A or B to approve this design');
+      if (body.choice && !offered.has(body.choice)) throw new HttpError(400, 'invalid_choice', 'that direction was not offered');
+    } else if (body.choice) throw new HttpError(400, 'invalid_request', 'a direction can only be chosen when approving');
     if (body.verdict === 'changes') {
       if (!body.comment && !body.lineComments?.length) throw new HttpError(400, 'invalid_request', 'add a comment or at least one line comment');
       if (e.revision >= MAX_REVISIONS) throw new HttpError(409, 'max_revisions', `at most ${MAX_REVISIONS} revisions are allowed`);
