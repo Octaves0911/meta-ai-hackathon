@@ -122,10 +122,36 @@ Rules:
 
 **Designer → Code, concretely**: the approved mockup (chosen direction, brief, palette/type, real copy) is the Code agent's spec. Code turns it into production structure, not a copy-paste of the mockup: semantic HTML, responsive CSS, accessible markup, components if the stack calls for it. With a connected workspace it targets that project's stack and returns a validated patch (§2.5). With **no workspace** (a new site) it returns a **file bundle** (`site.zip` + file tree viewer, ≤ 40 files / 1 MB, static HTML/CSS/JS by default unless the meeting or brand note names a framework). Never auto-applied, never deployed.
 
-### 1.10 Data model deltas
+### 1.10 Project repositories (owner-managed)
+- **Owner setting**: in project settings the **owner** (only) adds GitHub repo links (`https://github.com/<owner>/<name>`), each with an optional short description ("web app", "billing API") and default branch. Members can see them; only the owner adds/removes. Table `project_repos(project_id, owner, name, default_branch, description, languages, indexed_at, added_by)`.
+- **Access**: a GitHub connection per project (GitHub App installation preferred; fine-grained token as fallback), stored **only in the connector** (AES-256-GCM like Google tokens), scoped to the listed repos. Adding a repo validates it with the GitHub API (exists, token can read, can open PRs) and shows the result.
+- **Repo index**: on add (and on demand/daily) we store README summary, top-level tree, languages, package manifests and key entry points in project memory, so the agent can choose without cloning.
+- **Repo picker (first step of every Code task)**: rank the project's repos against the task + meeting context + repo index, output `{repo, confidence, reason, alternatives}`.
+  - confident (≥ 0.7 and clearly ahead) → proceeds, shows its choice and reason on the review page;
+  - ambiguous → *Needs your input* with the candidate repos as buttons (the reviewer picks, never a guess);
+  - none fit → plan only + "no matching repository".
+  One repo per execution; a change spanning repos becomes separate stages/PRs.
+- **Sandbox use**: the setup phase clones the chosen repo (shallow, token used only for the clone, GitHub and package registries on the network allow-list); the **run phase has no token and no network**. Commit/push/PR happen **outside the sandbox**, from the verified patch, by the backend/connector with the PR-scoped credential (§2.5). No workspace folder is needed once repos are configured (the workspace remains for uploaded files/memory).
+- Removing a repo cancels nothing already merged; open executions on it are marked *repo removed*.
+
+### 1.11 Review box and live feedback (all agents)
+**Review inbox.** A **Reviews** page lists every execution awaiting the signed-in user's review (all projects, filter by project/agent/status, badge count in the nav and notifications). Opening one shows the review panel; the same panel is used from the task page.
+
+**View in the site, decide in the site.** The deliverable opens in an in-app viewer, not a download: **PDF** (inline PDF viewer, page navigation, zoom), HTML mockups (sandboxed, desktop/mobile toggle, A/B), Markdown, email draft, diff + Verification tab, site preview. Actions live in the same panel: **Approve** (picks A/B where relevant) · **Request changes** (reruns with feedback) · **Reject** (new verdict: stops the task/pipeline, task returns to a human, reason recorded) · Retry · Run with another agent.
+
+**Live interaction while reviewing.** A chat panel beside the deliverable talks to the agent that produced it, with the task brief, the current output and the whole review history as context:
+- *Ask* ("why did you pick this palette?", "where does this number come from?") → the agent answers, no change, no revision used.
+- *Change request* ("make B darker", "add a pricing section", "shorten the email") → the agent confirms what it will change; **Apply & rerun** starts a new revision with all pending feedback bundled (chat + line/region comments). Only reruns count toward the revision limit (default 5, configurable); chat messages are free but rate-limited and cost-capped.
+- The agent may ask **clarifying questions** back in the chat; answers feed the next rerun.
+- **Partial reruns**: the previous output and the feedback are given to the agent so it edits instead of starting over, and keeps what was approved ("keep A, revise B").
+- Live progress while it reruns (`execution:step` trace) and the new revision opens in the same panel with a **diff against the previous revision** where applicable (text diff; visual A/B for designs).
+- Data: `execution_messages(execution_id, revision, role user|agent, text, kind ask|change|clarify, created_at)`; events `execution:message`. The chat is private to reviewers/members of the project, and the same untrusted-input rules apply.
+
+### 1.12 Data model deltas
 `executions`: `confidence real`, `open_questions jsonb`, `usage jsonb`, `route_confidence real`, `pipeline_id uuid`, `stage int`, `stage_plan jsonb` (planned agents + reason), `input_execution_id` (the approved stage whose output this one consumes), `approved_choice text` (e.g. design direction A/B).
 `execution_steps` (new). `execution_artifacts.type` gains `html` (sandboxed mockup) and `table`; `file` and `pdf` get real payloads (§1.8).
 `artifact.payload.sources[]`: `{title, url|label, kind: web|project|mail|drive, quote?}`.
+`project_repos` (§1.10), `execution_messages` (§1.11), `executions.repo_id`, review verdict `reject` + status `rejected`.
 `email_send_attachments(execution_id, artifact_id, filename, mime, size, sha256)` (new; audit + dedupe).
 
 ## 2. The agents
@@ -229,14 +255,17 @@ Header: agent · status · **Confidence** · cost · revision. Top card: **Needs
 
 ## 5. Build order (each = branch, tests, live check, merge on your OK)
 0. `feat/agent-core` — gateway v2, brief, router v2, trace, quality gate, limits, review header
+0a. `feat/review-inbox` — Reviews page, in-app PDF/HTML/diff viewers, Reject verdict, notifications
 0b. `feat/agent-files` — `apps/ai/files/` PDF builder (spec → bytes; DOCX/PPTX/XLSX later), `file` artifact + storage, download/preview, golden tests
+0c. `feat/review-chat` — live agent chat in the review panel (ask / change / clarify), Apply & rerun, partial reruns, revision diff
 1. `feat/agent-research` — web search path, citations, PDF deliverable
 2. `feat/agent-communication` — brief-grounded drafting + fact check, multipart send with approved PDF attachments + live attachment progress chips
 3. `feat/agent-marketing` — timeline anchored to decisions, PDF (slide-per-page for decks)
 4. `feat/agent-designer` — renderer interface + HTML mockups (+ chosen image provider)
 5a. `feat/agent-sandbox` — Modal sandbox wrapper (`SANDBOX_MODE`), images, two-phase run, limits, evidence capture, mock transport for tests
-5b. `feat/agent-code` — read-only repo tools, patch/site generation, sandbox verification + repair loop, diff viewer, Verification tab
-5c. `feat/agent-github-pr` — GitHub connection, branch/commit/PR from verified results, confirmation dialog, audit
+5b. `feat/project-repos` — owner adds GitHub repos, validation, index, repo picker
+5c. `feat/agent-code` — read-only repo tools, patch/site generation, sandbox verification + repair loop, diff viewer, Verification tab
+5d. `feat/agent-github-pr` — GitHub connection, branch/commit/PR from verified results, confirmation dialog, audit
 6. `feat/agent-e2e` — end-meeting → route → run → review → approve test, cost caps, README
 
 ## 6. Decisions to finalise
@@ -253,4 +282,5 @@ Header: agent · status · **Confidence** · cost · revision. Top card: **Needs
 11. ✅ **Multi-stage tasks**: hand-offs with an approval gate at every stage; website/landing page → Designer → Code; card/banner/template → Designer only (§1.9).
 11b. ✅ Designer output goes to Code **only** for web-page design tasks (§1.9).
 12. ✅ **Code agent**: all generated code runs and is tested only in a Modal sandbox; commit + PR only from verified results after approval (§2.5).
-13. **Still open**: Designer PDF from mockups (optional headless browser vs simple drawing), Fireworks in the first pass, deployment models, auto-run policy, spend cap.
+13. ✅ Features outside the agents: owner-managed project repos with an agent repo picker (§1.10); a Reviews inbox with in-site PDF/design viewing and approve/reject (§1.11); live chat with the agent during review with Apply & rerun (§1.11).
+14. **Still open**: Designer PDF from mockups (optional headless browser vs simple drawing), Fireworks in the first pass, deployment models, auto-run policy, spend cap.
