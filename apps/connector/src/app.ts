@@ -45,6 +45,13 @@ export function buildApp(db: pg.Pool, connector = new Connector(db), github = ne
   // Read-only repository access for the Code agent: the file list and single text files. Secrets are refused here regardless of what the caller asks.
   app.get('/github/tree', async (req) => { const q = z.object({ projectId: uuid, owner: repoPart, name: repoPart, ref: z.string().min(1).max(200) }).parse(req.query); return github.tree(q.projectId, q.owner, q.name, q.ref); });
   app.get('/github/file', async (req) => { const q = z.object({ projectId: uuid, owner: repoPart, name: repoPart, ref: z.string().min(1).max(200), path: z.string().min(1).max(300) }).parse(req.query); return github.file(q.projectId, q.owner, q.name, q.path, q.ref); });
+  /** The Code agent's verified change becomes a pull request. Called by the backend only after the reviewer's explicit confirmation. */
+  app.post('/github/pr', async (req) => {
+    const b = z.object({ projectId: uuid, owner: repoPart, name: repoPart, baseBranch: z.string().min(1).max(200), baseSha: z.string().length(40), branch: z.string().max(80), title: z.string().min(1).max(200), body: z.string().max(20_000), message: z.string().min(1).max(5_000),
+      draft: z.boolean(), files: z.array(z.object({ path: z.string().min(1).max(300), content: z.string().max(300_000), mode: z.string().max(8).optional() })).min(1).max(8) }).parse(req.body);
+    const { projectId, ...pr } = b;
+    return github.createPullRequest(projectId, pr);
+  });
   /** For the sandbox's clone only; never exposed to a browser (the backend does not proxy it). */
   app.get('/github/clone-token', async (req) => ({ token: await github.cloneToken(uuid.parse((req.query as any)?.projectId)) }));
 
