@@ -1,11 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { ChatBody, EmailDraftBody, MAX_CHAT_MESSAGES, MAX_REVISIONS, RerunBody, ReviewBody, RunWithBody, SendEmailBody, type ExecutionDetail, type ExecutionMessage, type ExecutionSummary, type ExecutionUsage, type ReviewCounts } from '@meetpilot/shared';
+import { ChatBody, EmailDraftBody, type EmailAttachments, MAX_CHAT_MESSAGES, MAX_REVISIONS, RerunBody, ReviewBody, RunWithBody, SendEmailBody, type ExecutionDetail, type ExecutionMessage, type ExecutionSummary, type ExecutionUsage, type ReviewCounts } from '@meetpilot/shared';
 import { connector } from '../services/connector.js';
 import { requireUser, type AuthUser } from '../app.js';
 import { HttpError } from '../errors.js';
 import { TASK_SELECT, toTask } from '../insights/tasksFormat.js';
+import { AttachmentError, candidatesFor, chipsFor, filesForSend, invalidAttachmentIds } from '../agents/attachments.js';
 
 const SUMMARY_SELECT = `select e.*, t.title as task_title, t.meeting_id, m.title as meeting_title, to_char(t.due_date,'YYYY-MM-DD') as due,
     t.assigned_to, t.project_id, t.description as task_description, p.name as project_name, ua.username as assignee_name, e.reviewer_id, ur.username as reviewer_name
@@ -82,7 +83,7 @@ export async function executionRoutes(app: FastifyInstance) {
       const access = e.reviewer_id === me.id ? await connector<{ granted: boolean; account: string | null }>(`/gmail/send-access?projectId=${e.project_id}&userId=${me.id}`).catch(() => null) : null;
       send = {
         granted: access ? access.granted : null, account: access?.account ?? null,
-        sent: sent.rows.filter((r) => r.recipients.messageId).map((r) => ({ sentAt: r.sent_at, from: r.recipients.from ?? null, to: r.recipients.to ?? [], cc: r.recipients.cc ?? [], subject: r.recipients.subject ?? '', messageId: r.recipients.messageId ?? null })),
+        sent: sent.rows.filter((r) => r.recipients.messageId).map((r) => ({ sentAt: r.sent_at, from: r.recipients.from ?? null, to: r.recipients.to ?? [], cc: r.recipients.cc ?? [], subject: r.recipients.subject ?? '', messageId: r.recipients.messageId ?? null, attachments: r.recipients.attachments ?? [] })),
       };
     }
     return {
@@ -249,12 +250,27 @@ export async function executionRoutes(app: FastifyInstance) {
     uuid(req.params.aid);
     if (e.reviewer_id !== me.id) throw new HttpError(403, 'forbidden', 'only the reviewer can edit the draft');
     if (e.status !== 'awaiting_review') throw new HttpError(409, 'not_editable', 'the draft can no longer be edited');
+    const bad = await invalidAttachmentIds(app.db, e, body.attachments);
+    if (bad.length) throw new HttpError(400, 'invalid_attachment', 'you can only attach deliverables of other agent work in this project');
     const { rows } = await app.db.query(
       `update execution_artifacts set payload = coalesce(payload, '{}'::jsonb) || $3::jsonb
        where id = $1 and execution_id = $2 and type = 'email_draft' and revision = $4 returning id, type, title, uri, payload, revision`,
       [req.params.aid, e.id, JSON.stringify({ ...body, missing_recipients: body.to.length === 0 }), e.revision]);
     if (!rows[0]) throw new HttpError(404, 'not_found', 'draft not found');
     return rows[0];
+  });
+
+  /** Attachment chips for an email draft: what is attached (with live progress), what the agent suggested, and what else could be. */
+  app.get<{ Params: { id: string } }>('/executions/:id/attachments', async (req): Promise<EmailAttachments> => {
+    const me = await requireUser(app, req);
+    const e = await load(req.params.id, me);
+    if (e.agent !== 'communication') return { selected: [], suggested: [], candidates: [] };
+    const { rows } = await app.db.query("select payload from execution_artifacts where execution_id = $1 and type = 'email_draft' and revision = $2", [e.id, e.revision]);
+    const p = rows[0]?.payload ?? {};
+    const selectedIds: string[] = Array.isArray(p.attachments) ? p.attachments : [];
+    const suggestedIds: string[] = (Array.isArray(p.suggested_attachments) ? p.suggested_attachments : []).filter((i: string) => !selectedIds.includes(i));
+    const [selected, suggested, candidates] = await Promise.all([chipsFor(app.db, e.project_id, selectedIds), chipsFor(app.db, e.project_id, suggestedIds), candidatesFor(app.db, e)]);
+    return { selected, suggested, candidates: candidates.filter((c) => !selectedIds.includes(c.executionId)) };
   });
 
   // Sending is always an explicit, confirmed human action on approved work (F9.9, F9.10). Recipients and text are exactly what
@@ -269,11 +285,15 @@ export async function executionRoutes(app: FastifyInstance) {
     const { rows } = await app.db.query("select id, payload from execution_artifacts where id = $1 and execution_id = $2 and type = 'email_draft' and revision = $3", [body.artifactId, e.id, e.revision]);
     if (!rows[0]) throw new HttpError(404, 'not_found', 'draft not found');
     const p = rows[0].payload ?? {};
-    const draft = EmailDraftBody.safeParse({ to: p.to ?? [], cc: p.cc ?? [], subject: p.subject ?? '', body: p.body ?? '' });
+    const draft = EmailDraftBody.safeParse({ to: p.to ?? [], cc: p.cc ?? [], subject: p.subject ?? '', body: p.body ?? '', attachments: p.attachments ?? [] });
     if (!draft.success) throw new HttpError(400, 'invalid_email', draft.error.issues.map((i) => i.message).join('; '));
     if (draft.data.to.length === 0) throw new HttpError(400, 'invalid_email', 'add at least one recipient before sending');
     const d = draft.data;
-    const hash = createHash('sha256').update(JSON.stringify([rows[0].id, [...d.to].sort(), [...d.cc].sort(), d.subject, d.body, p.thread_id ?? null])).digest('hex');
+    // Every attached file must be approved work; the bytes that go out are exactly the approved ones.
+    let files: Awaited<ReturnType<typeof filesForSend>>;
+    try { files = await filesForSend(app.db, e.project_id, d.attachments); }
+    catch (err) { if (err instanceof AttachmentError) throw new HttpError(err.code === 'attachments_not_ready' ? 409 : 400, err.code, err.message); throw err; }
+    const hash = createHash('sha256').update(JSON.stringify([rows[0].id, [...d.to].sort(), [...d.cc].sort(), d.subject, d.body, p.thread_id ?? null, files.map((f) => f.sha256).sort()])).digest('hex');
     // Claim the send first: the unique (execution, hash) makes double-clicks and retries safe.
     const claim = await app.db.query(
       'insert into email_sends(execution_id, artifact_id, message_hash, recipients) values ($1,$2,$3,$4) on conflict do nothing returning id, sent_at',
@@ -281,8 +301,10 @@ export async function executionRoutes(app: FastifyInstance) {
     if (!claim.rows[0]) throw new HttpError(409, 'already_sent', 'this email has already been sent');
     try {
       const sent = await connector<{ messageId: string; threadId: string | null; from: string }>('/gmail/send', { method: 'POST', json: {
-        projectId: e.project_id, userId: me.id, to: d.to, cc: d.cc, subject: d.subject, body: d.body, threadId: p.thread_id ?? null, inReplyTo: p.in_reply_to ?? null, references: p.references ?? null } });
-      await app.db.query('update email_sends set recipients = $2 where id = $1', [claim.rows[0].id, { from: sent.from, to: d.to, cc: d.cc, subject: d.subject, messageId: sent.messageId, threadId: sent.threadId }]);
+        projectId: e.project_id, userId: me.id, to: d.to, cc: d.cc, subject: d.subject, body: d.body, threadId: p.thread_id ?? null, inReplyTo: p.in_reply_to ?? null, references: p.references ?? null,
+        attachments: files.map((f) => ({ filename: f.filename, mime: f.mime, data_b64: f.data.toString('base64') })) } });
+      await app.db.query('update email_sends set recipients = $2 where id = $1', [claim.rows[0].id, { from: sent.from, to: d.to, cc: d.cc, subject: d.subject, messageId: sent.messageId, threadId: sent.threadId, attachments: files.map((f) => ({ filename: f.filename, size: f.size })) }]);
+      for (const f of files) await app.db.query('insert into email_send_attachments(send_id, artifact_id, filename, mime, size, sha256) values ($1,$2,$3,$4,$5,$6)', [claim.rows[0].id, f.artifactId, f.filename, f.mime, f.size, f.sha256]);
       emitUpdate(e, 'approved');
       app.analytics.track('email_sent', {}, { userId: me.id, projectId: e.project_id, meetingId: e.meeting_id });
       return { sentAt: claim.rows[0].sent_at, messageId: sent.messageId, from: sent.from, to: d.to, cc: d.cc };

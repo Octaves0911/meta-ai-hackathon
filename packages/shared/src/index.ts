@@ -203,7 +203,7 @@ export interface ExecutionDetail extends ExecutionSummary {
   /** Things the agent could not settle and a human must supply or confirm (shown first on a review). */
   openQuestions: string[]; usage: ExecutionUsage | null; steps: ExecutionStep[];
   /** Email-drafting runs only: whether the reviewer allowed sending via Gmail, and every send made from this run (audit). */
-  send: { granted: boolean | null; account: string | null; sent: { sentAt: string; from: string | null; to: string[]; cc: string[]; subject: string; messageId: string | null }[] } | null;
+  send: { granted: boolean | null; account: string | null; sent: { sentAt: string; from: string | null; to: string[]; cc: string[]; subject: string; messageId: string | null; attachments: { filename: string; size: number }[] }[] } | null;
 }
 export const RunWithBody = z.object({ agent: z.enum(['research', 'marketing', 'designer', 'communication', 'code']) });
 export const ReviewBody = z.object({
@@ -216,7 +216,13 @@ export const MAX_RECIPIENTS = 10; // to + cc together
 export const EmailDraftBody = z.object({
   to: z.array(z.string().email()).max(MAX_RECIPIENTS), cc: z.array(z.string().email()).max(MAX_RECIPIENTS),
   subject: z.string().max(300).refine(noBreaks, 'subject must be a single line'), body: z.string().max(50000),
+  /** Executions whose PDF deliverable is attached (they must be approved before the email can be sent). */
+  attachments: z.array(z.string().uuid()).max(5).default([]),
 }).refine((d) => d.to.length + d.cc.length <= MAX_RECIPIENTS, { message: `at most ${MAX_RECIPIENTS} recipients in total`, path: ['to'] });
+export type AttachmentState = 'ready' | 'awaiting_approval' | 'working' | 'failed' | 'no_file';
+/** One attachable deliverable (another execution's PDF) and where it is right now. */
+export interface AttachmentChip { executionId: string; taskTitle: string; agent: AgentName | null; state: AttachmentState; label: string; files: { artifactId: string; filename: string; size: number }[] }
+export interface EmailAttachments { selected: AttachmentChip[]; suggested: AttachmentChip[]; candidates: AttachmentChip[] }
 export const SendEmailBody = z.object({ artifactId: z.string().uuid(), confirm: z.literal(true, { error: 'sending needs explicit confirmation' }) });
 
 export interface ConnectionView {

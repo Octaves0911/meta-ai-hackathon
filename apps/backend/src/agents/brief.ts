@@ -4,6 +4,7 @@ import type { Pool } from 'pg';
 import { buildContext } from '../memory/context.js';
 import type { Embedder } from '../memory/embedder.js';
 import { jaccard, tokens } from '../analytics/compute.js';
+import { candidatesFor } from './attachments.js';
 
 export const LINE_RADIUS = 10;
 export const MAX_LINES = 24;
@@ -20,6 +21,8 @@ export interface BriefBody {
   prior_work: { title: string; agent: string; summary: string }[];
   /** false when the project's owner switched external lookups off. */
   allow_web: boolean;
+  /** Deliverables of other work an email draft could attach (communication only). */
+  files: { id: string; title: string; agent: string; state: string }[];
 }
 
 /** The transcript window around the sentence(s) a task came from: ±LINE_RADIUS segments, the task's own segments marked. Capped. */
@@ -103,5 +106,8 @@ export async function buildBrief(db: Pool, embedder: Embedder, e: {
     neighbours: neighbours.rows.map((r) => ({ title: r.title, assignee: r.assignee, status: r.status })),
     prior_work: rankPriorWork(approved.rows, e.title, e.agent ?? '').map((r) => ({ title: r.title, agent: r.agent, summary: String(r.summary ?? '').slice(0, 600) })),
     allow_web: !(project.rows[0]?.no_external_lookups ?? false),
+    files: e.agent === 'communication'
+      ? (await candidatesFor(db, { id: e.id, project_id: e.project_id, meeting_id: e.meeting_id })).slice(0, 12).map((c) => ({ id: c.executionId, title: c.taskTitle, agent: c.agent ?? '', state: c.state }))
+      : [],
   };
 }
