@@ -186,13 +186,40 @@ Order: **Research → Communication → Marketing → Designer → Code** (Resea
 - **Done when**: two distinct directions render safely in the sandbox on desktop and 375 px widths; HTML with `<script>` or remote URLs is rejected.
 
 ### 2.5 Code agent
-- **Levels**: **L1** plan (always) · **L2** patch against the project's workspace folder, shown as a diff, **never applied automatically** · **L3** GitHub PR after approval (later; needs a token).
-- **Tools (read-only, confined to the workspace root)**: `list_files`, `read_file` (≤12 files / 40 KB), `search_code` (existing code index), `git_apply_check` (applies the generated patch to a throw-away copy).
-- **Pipeline**: locate files → read → plan (steps, files touched, risks, tests, rollout) → generate unified diff → validate with `git apply --check` (one repair attempt) → write tests *inside the patch*.
-- **Deliverables**: `markdown` plan + `diff` (per-file) + **files**: `change.patch` (downloadable, `git apply`-able) and `technical-plan.pdf` (shareable with non-developers). No workspace connected → plan only, with a note.
-- **As a second stage**: receives the approved design (chosen direction, brief, palette, copy) as its spec; no workspace → `site.zip` file bundle + file tree viewer; workspace → validated patch.
-- **Review UX**: upgrade the diff viewer (file tree, side-by-side/inline, line comments that feed the revision loop — PRD F8.5).
-- **Done when**: on a seeded sample repo the patch applies cleanly and the proposed test fails before / passes after (checked in the test suite, not in production).
+**Rule: AI-written code is never run or tested anywhere except an isolated Modal Sandbox.** It never executes on the app server or a developer machine. A change is only called *verified* when it passed in the sandbox, and a PR is only ever offered for verified work.
+
+- **Levels**: **L1** plan (always) · **L2** verified patch / site bundle, shown as a diff, never auto-applied · **L3** commit + GitHub PR from a *verified* result (after approval; needs a GitHub connection).
+- **Tools**: read-only, confined to the workspace root: `list_files`, `read_file` (≤12 files / 40 KB), `search_code` (existing index), plus sandbox tools: `sandbox_run(cmd)` (allow-listed commands: install, test, lint, build) and `git_apply_check`. Secret files (`.env`, key files) are on a deny-list.
+- **As a second stage** (web-page hand-off, §1.9): receives the approved design (chosen direction, brief, palette, copy) as its spec; no workspace → static `site.zip` bundle (≤ 40 files / 1 MB); workspace → patch targeting that stack.
+
+#### Modal sandbox (new)
+- **Where**: the Python AI service uses the Modal SDK (`modal.Sandbox`), configured by `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`; `SANDBOX_MODE=modal|mock|off`. Without credentials (or `off`) the agent still produces the plan/patch but labels it **"not tested"** and PR creation is disabled.
+- **Image**: a pinned base image per ecosystem (Node, Python, static-site tooling + headless Chromium for page checks); dependencies are installed in a separate phase.
+- **Two phases**:
+  1. *Setup*: copy the workspace snapshot in, apply the patch, install dependencies. Network is allowed **only to package registries** (outbound allow-list).
+  2. *Run*: tests, lint, build and page checks with **network blocked** (`block_network`), no secrets or tokens in the environment, no mounted host paths.
+- **Limits per run**: CPU/memory caps, wall-clock timeout per command and per sandbox (Modal's sandbox lifetime default is 300 s; we set ours explicitly), stdout/stderr truncated, file count/size caps. The sandbox is terminated at the end; filesystem snapshots may cache the installed dependencies between repair attempts.
+- **What is checked**:
+  - *Engineering task*: (a) tests on the **base** code, (b) apply patch, (c) the project's tests plus the new tests, (d) lint/typecheck/build if the project defines them. The new test must fail before and pass after.
+  - *Website bundle*: HTML validity, every referenced file exists, no remote scripts or assets, console errors, an accessibility scan, **screenshots at 375 px and desktop** (stored as image artifacts and embedded in the technical-plan PDF).
+- **Repair loop**: on failure the logs (truncated) go back to the agent for a fix, **≤ 3 attempts**, each a new sandbox run; within the overall step/time/cost limits. After 3 failures the result is delivered as **"failed verification"** with the logs, no PR option.
+- **Evidence** stored with the execution: commands run, exit codes, test counts, durations, truncated logs, screenshots, sandbox cost. Shown on the review page as a **Verification** tab and as the headline status: `Verified ✓ (42 passed, build ok)` / `Failed ✗` / `Not tested`.
+- Sandbox output is data, never instructions (a test log saying "ignore previous instructions" does nothing).
+- **Cost**: billed per second by Modal (CPU and memory); estimated cost is added to the execution `usage` and counted in the daily cap. Verify current rates on Modal's pricing page before sizing.
+
+#### Pipeline
+1. focus → 2. locate and read files → 3. plan (steps, files, risks, tests, rollout) → 4. generate patch / bundle → 5. `git apply --check` → 6. **sandbox verification + repair loop** → 7. quality gate → 8. deliver.
+
+#### Commit and PR (L3), only after verification
+- **Preconditions** (all required): status *Verified ✓* · reviewer approved this revision · the project has a GitHub connection for this repo (GitHub App or a fine-grained token with contents + pull-requests write on that repo only).
+- **Gate**: *Create PR* is a deliberate click after approval, with a confirmation dialog (repo, base branch, branch name, files changed, verification summary). The "everything passed" condition is necessary but **not sufficient**: a human still decides. Not available when the result is *Failed* or *Not tested*.
+- **What it does**: create branch `meetpilot/<task-slug>-<short id>` from the base branch → commit the verified patch (commit message from the plan; author = the reviewer, with an agent co-author trailer) → push the branch → open a PR whose body has the task, meeting link, plan, files touched, **test evidence** and the screenshots/log summary.
+- **Never**: push to the default branch, force-push, merge, or delete branches. Idempotent (one PR per execution revision; double-click safe). Audit row per PR.
+- **Re-verify**: if the base branch moved since verification, re-run the sandbox on the new base before opening the PR.
+
+- **Deliverables**: `markdown` plan + `diff` (per-file) + **files**: `change.patch` / `site.zip`, `technical-plan.pdf` (includes the verification summary) + a `verification` artifact (logs, results, screenshots) + the PR link once created.
+- **Review UX**: upgraded diff viewer (file tree, inline/side-by-side, line comments that feed revisions, PRD F8.5), a **Verification** tab, preview of generated sites in a sandboxed iframe with scripts off (the real execution is in Modal), and the *Create PR* action.
+- **Done when**: on a seeded sample repo, the patch applies, the new test fails on base and passes with the patch **inside the sandbox** (a mock transport covers CI; one live Modal run covers the smoke test); a deliberately broken patch is repaired or reported as failed, never PR-able; a build that tries network access or reads host secrets is blocked; a traversal attempt (`../../etc/passwd`) is refused; with `SANDBOX_MODE=off` the result says "not tested" and no PR is possible; the PR is created exactly once and never from an unverified result.
 
 ## 3. Collaboration matrix (consultations; unchanged limits)
 `marketing → research` · `designer → marketing, research` · `communication → research` · `code → research`. Depth ≤ 2, ≤ 4 per task, no cycles; shown in the Collaboration panel (exists) and as `consult` steps in the trace.
@@ -207,7 +234,9 @@ Header: agent · status · **Confidence** · cost · revision. Top card: **Needs
 2. `feat/agent-communication` — brief-grounded drafting + fact check, multipart send with approved PDF attachments + live attachment progress chips
 3. `feat/agent-marketing` — timeline anchored to decisions, PDF (slide-per-page for decks)
 4. `feat/agent-designer` — renderer interface + HTML mockups (+ chosen image provider)
-5. `feat/agent-code` — read-only repo tools, validated patch, diff viewer
+5a. `feat/agent-sandbox` — Modal sandbox wrapper (`SANDBOX_MODE`), images, two-phase run, limits, evidence capture, mock transport for tests
+5b. `feat/agent-code` — read-only repo tools, patch/site generation, sandbox verification + repair loop, diff viewer, Verification tab
+5c. `feat/agent-github-pr` — GitHub connection, branch/commit/PR from verified results, confirmation dialog, audit
 6. `feat/agent-e2e` — end-meeting → route → run → review → approve test, cost caps, README
 
 ## 6. Decisions to finalise
@@ -223,4 +252,5 @@ Header: agent · status · **Confidence** · cost · revision. Top card: **Needs
 10. ✅ **Max total attachment size**: 10 MB.
 11. ✅ **Multi-stage tasks**: hand-offs with an approval gate at every stage; website/landing page → Designer → Code; card/banner/template → Designer only (§1.9).
 11b. ✅ Designer output goes to Code **only** for web-page design tasks (§1.9).
-12. **Still open**: Designer PDF from mockups (optional headless browser vs simple drawing), Fireworks in the first pass, Code ceiling (patch / bundle), deployment models, auto-run policy, spend cap.
+12. ✅ **Code agent**: all generated code runs and is tested only in a Modal sandbox; commit + PR only from verified results after approval (§2.5).
+13. **Still open**: Designer PDF from mockups (optional headless browser vs simple drawing), Fireworks in the first pass, deployment models, auto-run policy, spend cap.
