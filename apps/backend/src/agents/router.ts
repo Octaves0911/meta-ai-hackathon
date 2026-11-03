@@ -5,11 +5,11 @@ import { classifyTask, type Category } from './classify.js';
 export const MIN_CONFIDENCE = 0.6;
 export interface Plan {
   agent: AgentName | null; category: Category; reason: string; confidence: number | null;
-  stagePlan: { stages: { agent: AgentName; goal: string }[]; scope: 'deliverable' | 'build'; suggestedAgent?: AgentName | null; missingInputs?: string[] } | null;
+  stagePlan: { stages: { agent: AgentName; goal: string }[]; scope: 'deliverable' | 'build'; suggestedAgent?: AgentName | null; missingInputs?: string[]; webPage?: boolean } | null;
 }
 interface ModelRoute {
   category: Category; agent: AgentName | null; stages: { agent: AgentName; goal: string }[]; scope: 'deliverable' | 'build';
-  can_ai_do: boolean; confidence: number; reason: string; human_reason: string; missing_inputs: string[];
+  can_ai_do: boolean; confidence: number; reason: string; human_reason: string; missing_inputs: string[]; web_page?: boolean;
 }
 
 /** `ask` calls the AI service's /route; it may throw (service down, no key, mock mode). */
@@ -22,7 +22,7 @@ export async function routeTask(task: { title: string; description: string | nul
     return { agent: rules.agent, category: rules.category, reason: rules.reason, confidence: rules.agent ? 0.7 : null,
              stagePlan: rules.agent ? { stages: [{ agent: rules.agent, goal: task.title }], scope: 'deliverable' } : null };
   }
-  const stagePlan = m.stages.length ? { stages: m.stages, scope: m.scope, missingInputs: m.missing_inputs } : null;
+  const stagePlan = m.stages.length ? { stages: m.stages, scope: m.scope, missingInputs: m.missing_inputs, ...(m.web_page ? { webPage: true } : {}) } : null;
   if (!m.agent || !m.can_ai_do) {
     return { agent: null, category: m.category, reason: m.human_reason || m.reason || 'No specialist agent fits this task', confidence: m.confidence, stagePlan: null };
   }

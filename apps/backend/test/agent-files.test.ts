@@ -34,3 +34,12 @@ test('file names cannot carry paths, control characters or the wrong extension',
   assert.equal(safeFilename('...', 'pdf'), 'document.pdf');
   assert.ok(safeFilename('x'.repeat(500), 'pdf').length <= 84);
 });
+
+test('a zip bundle is accepted by its bytes and never mistaken for a PDF', () => {
+  const zip = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from('rest')]);
+  const f = prepareFile({ file_b64: zip.toString('base64'), filename: '../site.html', mime: 'application/zip' });
+  assert.equal(f.mime, 'application/zip');
+  assert.equal(f.filename, 'site.zip');
+  assert.throws(() => prepareFile({ file_b64: Buffer.from('%PDF-1.4 x').toString('base64'), filename: 'x.zip', mime: 'application/zip' }), /not a zip/);
+  assert.throws(() => prepareFile({ file_b64: zip.toString('base64'), filename: 'x.pdf', mime: 'application/pdf' }), /not a PDF/);
+});

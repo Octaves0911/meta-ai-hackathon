@@ -21,6 +21,8 @@ export interface BriefBody {
   prior_work: { title: string; agent: string; summary: string }[];
   /** false when the project's owner switched external lookups off. */
   allow_web: boolean;
+  /** Work approved in the previous stage of this task (e.g. the chosen design direction), which this stage must implement. */
+  approved_input: { agent: string; title: string; direction: string | null; text: string } | null;
   /** The project owner's brand and voice note. */
   brand_note: string | null;
   /** Deliverables of other work an email draft could attach (communication only). */
@@ -61,7 +63,7 @@ export function rankPriorWork<T extends { title: string; agent: string }>(rows: 
 
 export async function buildBrief(db: Pool, embedder: Embedder, e: {
   id: string; task_id: string; project_id: string; meeting_id: string; reviewer_id: string; agent: string | null;
-  title: string; description: string | null; due: string | null; assignee: string | null;
+  title: string; description: string | null; due: string | null; assignee: string | null; parent_execution_id?: string | null;
 }): Promise<BriefBody> {
   const [task, meeting, parts, decisions, neighbours, approved, project] = await Promise.all([
     db.query(`select t.priority, ev.quote, ev.segment_from_seq as from_seq, ev.segment_to_seq as to_seq, ub.username as assigned_by
@@ -97,6 +99,20 @@ export async function buildBrief(db: Pool, embedder: Embedder, e: {
     meta: h.sourceType === 'external' && h.meta ? { from_email: h.meta.fromEmail ?? null, thread_id: h.meta.threadId ?? null, message_id: h.meta.messageId ?? null, subject: h.meta.subject ?? null } : undefined,
   }));
 
+  // A later stage receives what the reviewer approved in the earlier one (never a draft): the brief and the chosen mockup.
+  let approvedInput: BriefBody['approved_input'] = null;
+  if (e.parent_execution_id) {
+    const { rows: pr } = await db.query('select x.agent, x.revision, x.approved_choice, t.title from executions x join tasks t on t.id = x.task_id where x.id = $1 and x.status = \'approved\'', [e.parent_execution_id]);
+    if (pr[0]) {
+      const { rows: pa } = await db.query("select type, title, payload from execution_artifacts where execution_id = $1 and revision = $2 and type in ('markdown', 'html', 'table') order by type, title", [e.parent_execution_id, pr[0].revision]);
+      const md = pa.filter((a) => a.type === 'markdown').map((a) => String(a.payload?.content ?? '')).join('\n\n');
+      const htmls = pa.filter((a) => a.type === 'html');
+      const chosen = htmls.find((a) => a.payload?.direction === pr[0].approved_choice) ?? htmls[0];
+      const text = `${md}${chosen ? `\n\nApproved mockup (direction ${chosen.payload?.direction ?? ''}), as HTML:\n${String(chosen.payload?.html ?? '').slice(0, 9000)}` : ''}`.slice(0, 15000);
+      approvedInput = { agent: pr[0].agent, title: pr[0].title, direction: pr[0].approved_choice ?? null, text };
+    }
+  }
+
   const m = meeting.rows[0] ?? {};
   return {
     task: { title: e.title, description: e.description, due_date: e.due, assignee: e.assignee, priority: t.priority ?? null, assigned_by: t.assigned_by ?? null },
@@ -109,6 +125,7 @@ export async function buildBrief(db: Pool, embedder: Embedder, e: {
     prior_work: rankPriorWork(approved.rows, e.title, e.agent ?? '').map((r) => ({ title: r.title, agent: r.agent, summary: String(r.summary ?? '').slice(0, 600) })),
     allow_web: !(project.rows[0]?.no_external_lookups ?? false),
     brand_note: project.rows[0]?.brand_note ?? null,
+    approved_input: approvedInput,
     files: e.agent === 'communication'
       ? (await candidatesFor(db, { id: e.id, project_id: e.project_id, meeting_id: e.meeting_id })).slice(0, 12).map((c) => ({ id: c.executionId, title: c.taskTitle, agent: c.agent ?? '', state: c.state }))
       : [],

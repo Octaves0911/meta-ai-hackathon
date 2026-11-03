@@ -27,7 +27,7 @@ export function stateOf(r: SourceRow): { state: AttachmentState; label: string }
 const SELECT = `select x.id, x.status, x.agent, x.revision, t.title, t.meeting_id,
   (select s.label from execution_steps s where s.execution_id = x.id and s.revision = x.revision order by (s.status = 'running') desc, s.seq desc limit 1) as step_label,
   (select jsonb_agg(jsonb_build_object('artifactId', a.id, 'filename', f.filename, 'size', f.size, 'attachable', coalesce((a.payload->>'attachable')::boolean, false)) order by a.title)
-     from execution_artifacts a join execution_files f on f.artifact_id = a.id where a.execution_id = x.id and a.revision = x.revision) as files
+     from execution_artifacts a join execution_files f on f.artifact_id = a.id where f.mime = 'application/pdf' and a.execution_id = x.id and a.revision = x.revision) as files
   from executions x join tasks t on t.id = x.task_id`;
 
 const toChip = (r: any): AttachmentChip => {

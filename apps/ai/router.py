@@ -65,6 +65,7 @@ class RouteOut(BaseModel):
     reason: str = ""
     human_reason: str = ""
     missing_inputs: list[str] = Field(default_factory=list)
+    web_page: bool = False   # a web page/site is being designed or built: its approved design may be built by the Code agent
 
 
 def plan_stages(agent: str | None, title: str, goal_text: str, web_page: bool) -> tuple[list[Stage], str]:
@@ -89,7 +90,8 @@ def normalise(data: dict, title: str, goal_text: str) -> RouteOut:
     stages, scope = plan_stages(agent, title, goal_text, bool(data.get("web_page")))
     return RouteOut(category=category, agent=agent, stages=stages, scope=scope, can_ai_do=bool(data.get("can_ai_do")) and agent is not None, confidence=conf,
                     reason=str(data.get("reason", ""))[:300], human_reason=str(data.get("human_reason", ""))[:300],
-                    missing_inputs=[str(x)[:200] for x in data.get("missing_inputs", [])][:5])
+                    missing_inputs=[str(x)[:200] for x in data.get("missing_inputs", [])][:5],
+                    web_page=agent == "designer" and bool(data.get("web_page")) and bool(WEB.search(f"{title} {goal_text}")) and not NON_WEB.search(title))
 
 
 def build_router(require_secret) -> APIRouter:

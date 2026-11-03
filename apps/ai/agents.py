@@ -193,6 +193,16 @@ def _mock_run(name: str, req: RunRequest, state: _State) -> RunResponse:
     if name == "code" and len(req.repos) >= 2 and not req.repo_id:  # several repositories: the reviewer chooses
         return RunResponse(summary="Which repository should this change go to?", notes="More than one linked repository could be right.", artifacts=[], consultations=[], open_questions=["Which repository should this change go to?"],
                            repo_choice={"reason": "Mock: more than one repository fits.", "candidates": [{"repo_id": r.id, "full_name": r.full_name, "score": round(0.8 - 0.1 * i, 2), "reason": "mock"} for i, r in enumerate(req.repos[:3])]})
+    if name == "code" and req.approved_input and not req.repos and not req.repo_id:   # approved web-page design, no repository: a static site
+        import sitebundle
+        files = {"index.html": f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{_esc(t.title[:60])}</title><link rel="stylesheet" href="styles.css"></head><body><main><h1>{_esc(t.title[:60])}</h1><p>Mock site built from the approved design.</p><a href="#start">Get started</a></main></body></html>',
+                 "styles.css": "body{margin:0;font-family:system-ui,sans-serif}main{padding:24px}"}
+        data = sitebundle.make_zip(files)
+        return RunResponse(summary=f"Built a static site for “{t.title}”{rev}.", notes="Generated in mock mode.", consultations=state.consultations, artifacts=[
+            ArtifactOut(type="markdown", title="Static site", content=f"# Static site: {t.title}\n\nMock site from the approved design.\n"),
+            ArtifactOut(type="html", title="Preview", payload={"html": sitebundle.preview_html(files), "name": "Static site preview"}),
+            ArtifactOut(type="file", title="Site files (2)", payload={"filename": "site.zip", "mime": "application/zip", "size": len(data), "kind": "site", "files": [{"path": p, "size": len(c)} for p, c in sorted(files.items())], "file_b64": base64.b64encode(data).decode("ascii")}),
+            ArtifactOut(type="verification", title="Verification: Not tested", payload={"status": "not_tested", "reason": "Mock mode: nothing was run.", "mode": "static", "repo": "", "branch": "", "ecosystem": "static site", "steps": [], "warnings": [], "seconds": 0, "cost_usd": 0, "summary": "Not tested"})])
     md = f"# {name.title()} deliverable: {t.title}{rev}\n\n## Summary\nMock {name} output for the task above.{addressed}{consult_md}\n\n## Sources\n{sources}\n"
     arts = [ArtifactOut(type="markdown", title=f"{name.title()} report" if name != "code" else "Implementation plan", content=md)]
     if name == "code" and (req.repos or req.repo_id):
