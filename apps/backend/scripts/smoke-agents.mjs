@@ -87,6 +87,20 @@ ok('only failed runs can be retried', (await api(`/executions/${comm.id}/retry`,
 ok('retry accepted', (await api(`/executions/${ex}/retry`, 'dev', 'POST')).status === 204);
 ok('failed run recovers and awaits review', !!(await waitFor(async () => (await api(`/executions/${ex}`, 'dev')).body.status === 'awaiting_review')));
 
+// inbox: counts, filters, reject
+const counts = (await api('/reviews/counts', 'dev')).body;
+ok('sidebar counts: needs-review number', counts.needsReview >= 1 && typeof counts.working === 'number', counts);
+const f1 = (await api(`/reviews?group=needs_review&project=${P.id}&agent=research`, 'dev')).body;
+ok('filters combine (group + project + agent)', f1.some((x) => x.id === ex) && f1.every((x) => x.status === 'awaiting_review' && x.agent === 'research' && x.projectId === P.id && x.projectName === 'Agents'), f1.map((x) => [x.status, x.agent]));
+ok('unknown group / agent / project are refused', (await api('/reviews?group=bogus', 'dev')).status === 400 && (await api('/reviews?agent=bogus', 'dev')).status === 400 && (await api('/reviews?project=nope', 'dev')).status === 404);
+ok('reject needs a reason', (await api(`/executions/${ex}/review`, 'dev', 'POST', { verdict: 'reject' })).status === 400);
+ok('only the reviewer can reject', (await api(`/executions/${ex}/review`, 'rita', 'POST', { verdict: 'reject', comment: 'no' })).status === 403);
+ok('reject accepted', (await api(`/executions/${ex}/review`, 'dev', 'POST', { verdict: 'reject', comment: 'Wrong market entirely' })).status === 204);
+const rej = (await api(`/executions/${ex}`, 'dev')).body;
+ok('rejected: status, reason in history, no longer reviewable', rej.status === 'rejected' && rej.reviews.at(-1).verdict === 'reject' && rej.reviews.at(-1).comment === 'Wrong market entirely' && rej.canReview === false, rej.status);
+ok('rejecting hands the task back to a person (open)', (await db.query("select 1 from tasks where id=$1 and status='open'", [t])).rowCount === 1);
+ok('rejected work shows under failed/rejected, and cannot be reviewed again', (await api('/reviews?group=problem', 'dev')).body.some((x) => x.id === ex) && (await api(`/executions/${ex}/review`, 'dev', 'POST', { verdict: 'approve' })).status === 409);
+
 for (const u of U) await api(`/users/${id(u)}`, u, 'DELETE');
 await db.end();
 process.exit(process.exitCode ?? 0);
