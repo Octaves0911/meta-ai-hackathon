@@ -61,10 +61,31 @@ Token usage and estimated cost are saved on the execution (`usage jsonb`) and sh
 ### 1.7 Safety rules (all agents)
 No irreversible action without a human click (existing F8.7). Web pages and files are data, never instructions. Tool allow-list per agent. Private sources (Gmail/Drive) are used only on behalf of the reviewer and never copied into shared artifacts without marking them.
 
-### 1.8 Data model deltas
+### 1.8 File generation (shared; today no agent produces a real file)
+Today agents return Markdown, links, an email draft and one tiny SVG; the `pdf` type has no producer. Every agent that delivers a document must produce a **real, downloadable file**.
+
+**Principle: the model writes a structured spec (JSON, schema-constrained), deterministic code builds the file.** This is more reliable and better looking than free-form output, and keeps file bytes out of prompts.
+
+| Format | Library (pure Python, no system deps) | Spec the model fills | Used by |
+|---|---|---|---|
+| PDF | `fpdf2` (or `reportlab`) | title, sections[heading, paragraphs, bullets, table], sources | Research, Marketing, Code (plan), Designer (brief) |
+| DOCX | `python-docx` | same section spec as PDF | Marketing, Research, Communication (letters/attachments) |
+| PPTX | `python-pptx` | slides[title, bullets, table, notes, layout], theme | Marketing (campaign/launch deck), Research (findings deck), Designer (design review deck) |
+| XLSX | `openpyxl` | sheets[name, columns, rows] | Marketing (timeline, budget), Research (comparison) |
+| CSV / MD / PATCH | stdlib | rows / text / diff | Research, Code |
+| HTML (+ PNG/PDF export) | sandboxed HTML; PNG via headless browser (optional, decision) | design spec | Designer |
+
+- One module `apps/ai/files/` with `build_pdf|docx|pptx|xlsx(spec) -> bytes`, golden-file tests (opens with the reader library, page/slide counts, no empty sections).
+- **Storage**: bytes go to the existing artifact storage; the artifact is `type: "file"` with `payload {storage_key, filename, mime, size, sha256, attachable, pages|slides}`. Served with `Content-Disposition` + `nosniff` (existing upload rules). Previews: PDF inline, PPTX/DOCX as thumbnail/outline text + download.
+- **Limits**: ≤ 10 MB per file, ≤ 8 files per execution; filenames sanitised (`[A-Za-z0-9._ -]`, no path parts).
+- **Honesty**: any figure in a file is sourced or labelled "assumption" (same rules as the text deliverable); the quality gate checks the spec before the file is built.
+- **Attachable**: a file is `attachable` only after its execution is **approved** (never a draft).
+
+### 1.9 Data model deltas
 `executions`: `confidence real`, `open_questions jsonb`, `usage jsonb`, `route_confidence real`.
-`execution_steps` (new). `execution_artifacts.type` gains `html` (sandboxed mockup) and `table`.
+`execution_steps` (new). `execution_artifacts.type` gains `html` (sandboxed mockup) and `table`; `file` and `pdf` get real payloads (§1.8).
 `artifact.payload.sources[]`: `{title, url|label, kind: web|project|mail|drive, quote?}`.
+`email_send_attachments(execution_id, artifact_id, filename, mime, size, sha256)` (new; audit + dedupe).
 
 ## 2. The agents
 
@@ -81,7 +102,7 @@ Order: **Research → Communication → Marketing → Designer → Code** (Resea
   Budgeted: quote/lines and decisions first (short, high value); project-memory snippets fill the remainder. All wrapped in `<untrusted_source>`.
 - **Pipeline**: (1) **focus**: from task + meeting context, state the exact question to answer, the entities/constraints already named in the meeting, and what the team already decided (so it is not re-researched) → (2) plan 2–4 sub-questions → (3) answer each from project memory first, then web, with **search queries built from the meeting's own terms** (names, regions, versions, dates) and stripped of private details (internal figures, customer names, private mail text) → (4) every claim carries a source → (5) verify: each cited URL must be in the raw search results (no invented links) → (6) write the answer **to the focused question**, flagging where findings conflict with a meeting decision.
 - **Privacy**: anything taken from private Gmail/Drive is labelled in the report; approving a report that contains such items to the shared project warns the reviewer first. A project-level "No external lookups" switch forces project-only mode.
-- **Deliverables**: `markdown` report (Summary · Key findings · Comparison table · Recommendation · Risks & unknowns · Sources) + one `link` artifact per cited source (top 8) + `pdf` export.
+- **Deliverables**: `markdown` report (Summary · Key findings · Comparison table · Recommendation · Risks & unknowns · Sources) + one `link` artifact per cited source (top 8) + **files**: `report.pdf` (always), `report.docx` (on request or for long reports), `comparison.xlsx` (when the report has a comparison table), `findings.pptx` (when the task says deck/presentation/briefing).
 - **Honesty rules**: separate *project facts* from *web facts*; list "could not verify"; date-stamp web facts; report length ≤ ~1,500 words.
 - **Consults**: none (leaf).
 - **Review UX**: sources panel with open-link buttons; claim → source hover.
@@ -91,7 +112,13 @@ Order: **Research → Communication → Marketing → Designer → Code** (Resea
 - **Handles**: email, reply, announcement, follow-up, newsletter, message.
 - **Tools**: `find_thread` (reviewer's Gmail), `project_memory_search`; consult Research for missing facts.
 - **Pipeline**: intent + audience → find existing thread (reply vs new) → gather facts from the brief (dates/decisions/owners) → draft → **fact check** (every date, number and name in the body must appear in the brief) → recipients (existing rule: only addresses from sources or the task; else `missing_recipients`).
-- **Deliverables**: `email_draft` (to, cc, subject, body, open_questions, sources, thread ids). Send stays explicit (confirmation dialog, dedupe, ≤10 recipients; existing).
+- **Deliverables**: `email_draft` (to, cc, subject, body, open_questions, sources, thread ids, **attachments[]**). Send stays explicit (confirmation dialog, dedupe, ≤10 recipients; existing). Writes its own file only when the task is a letter/notice (`letter.pdf` / `.docx`).
+- **Attachments** (new):
+  - The agent scans the project for **approved** file artifacts relevant to the task (other tasks from the same meeting, prior approved work) and proposes them as chips on the draft; it never attaches anything on its own.
+  - The reviewer ticks each file; the send dialog lists every attachment (name, size, type) next to recipients and body.
+  - If the task implies an attachment that does not exist yet ("send the deck" but the deck task is not approved), it is listed under *Needs your input* and can be attached once approved (optionally the email waits for it).
+  - Connector: `buildRaw` gains multipart/mixed with attachments. Allowed: PDF, DOCX, PPTX, XLSX, CSV, PNG/JPG, MD, TXT; ≤ 5 files, ≤ 15 MB total (Gmail cap 25 MB incl. encoding); type verified by content sniffing, filenames sanitised against header injection; dedupe hash includes attachment hashes; audit row per attachment.
+  - Private Drive files are never auto-attached; the reviewer must pick one explicitly. Attachment bytes never enter model prompts.
 - **Review UX**: editable draft (exists); show the facts used and where they came from.
 - **Done when**: "announce the launch" drafts use the *latest* launch date from decisions; a reply lands in the existing thread; no invented address.
 
@@ -99,7 +126,7 @@ Order: **Research → Communication → Marketing → Designer → Code** (Resea
 - **Handles**: campaign, GTM, positioning, launch plan, press release, pricing strategy, social plan.
 - **Tools**: consult Research (≤2 questions), `get_decisions`, `get_team_tasks`.
 - **Pipeline**: research input → audience & positioning → messaging pillars → channels → **timeline anchored to the actual launch date and task owners from the meeting** → KPIs → budget assumptions (always flagged as assumptions) → write.
-- **Deliverables**: `markdown` plan + `table` (timeline) + `pdf`.
+- **Deliverables**: `markdown` plan + `table` (timeline) + **files**: `plan.pdf` (always), `campaign-deck.pptx` (when the task says deck/presentation/pitch, or for launch plans), `plan.docx` (editable version), `timeline.xlsx` (timeline + budget assumptions). Slides are produced from a structured slide spec (title, 3–5 bullets, optional table, speaker notes), one idea per slide.
 - **Done when**: if the launch date changed in the meeting, the plan uses the new date and says so; every number is either sourced or labelled "assumption".
 
 ### 2.4 Designer agent
@@ -109,14 +136,14 @@ Order: **Research → Communication → Marketing → Designer → Code** (Resea
   - `fireworks`: raster concept images from an open image model on Fireworks (you already have access).
   - `meta`: Muse Image, allowed only when deployed outside restricted jurisdictions.
 - **Pipeline**: consult Marketing (audience, tone) and Research (reference patterns) → design brief (goal, audience, constraints, palette, type scale, layout, copy) → render → self-check against the brief.
-- **Deliverables**: `markdown` brief + `html` mockups (A, B) or `image`; palette/typography as `table`.
+- **Deliverables**: `markdown` brief + `html` mockups (A, B) or `image`; palette/typography as `table`; **files**: `design-brief.pdf`, `mockups.pdf` (A and B, rendered), `design-review.pptx` (when the task says presentation), and PNG export of mockups if a headless browser is enabled (decision below). Image-provider outputs are stored as `file` PNG/JPG so they can be attached.
 - **Done when**: two distinct directions render safely in the sandbox on desktop and 375 px widths; HTML with `<script>` or remote URLs is rejected.
 
 ### 2.5 Code agent
 - **Levels**: **L1** plan (always) · **L2** patch against the project's workspace folder, shown as a diff, **never applied automatically** · **L3** GitHub PR after approval (later; needs a token).
 - **Tools (read-only, confined to the workspace root)**: `list_files`, `read_file` (≤12 files / 40 KB), `search_code` (existing code index), `git_apply_check` (applies the generated patch to a throw-away copy).
 - **Pipeline**: locate files → read → plan (steps, files touched, risks, tests, rollout) → generate unified diff → validate with `git apply --check` (one repair attempt) → write tests *inside the patch*.
-- **Deliverables**: `markdown` plan + `diff` (per-file, downloadable `.patch`). No workspace connected → plan only, with a note.
+- **Deliverables**: `markdown` plan + `diff` (per-file) + **files**: `change.patch` (downloadable, `git apply`-able) and `technical-plan.pdf` (shareable with non-developers). No workspace connected → plan only, with a note.
 - **Review UX**: upgrade the diff viewer (file tree, side-by-side/inline, line comments that feed the revision loop — PRD F8.5).
 - **Done when**: on a seeded sample repo the patch applies cleanly and the proposed test fails before / passes after (checked in the test suite, not in production).
 
@@ -128,9 +155,10 @@ Header: agent · status · **Confidence** · cost · revision. Top card: **Needs
 
 ## 5. Build order (each = branch, tests, live check, merge on your OK)
 0. `feat/agent-core` — gateway v2, brief, router v2, trace, quality gate, limits, review header
-1. `feat/agent-research` — web search path, citations, PDF export
-2. `feat/agent-communication` — brief-grounded drafting + fact check
-3. `feat/agent-marketing` — timeline anchored to decisions, PDF
+0b. `feat/agent-files` — `apps/ai/files/` (PDF, DOCX, PPTX, XLSX builders), `file` artifact + storage, download/preview, golden tests
+1. `feat/agent-research` — web search path, citations, PDF/XLSX/PPTX deliverables
+2. `feat/agent-communication` — brief-grounded drafting + fact check, multipart send with approved attachments
+3. `feat/agent-marketing` — timeline anchored to decisions, PDF/PPTX/DOCX/XLSX
 4. `feat/agent-designer` — renderer interface + HTML mockups (+ chosen image provider)
 5. `feat/agent-code` — read-only repo tools, validated patch, diff viewer
 6. `feat/agent-e2e` — end-meeting → route → run → review → approve test, cost caps, README
@@ -142,3 +170,7 @@ Header: agent · status · **Confidence** · cost · revision. Top card: **Needs
 4. **Models for deployment**: Wonder for Research + Code, Spark for the rest (recommended) · Spark everywhere · Wonder everywhere.
 5. **Auto-run policy**: run every routed task automatically (today) vs ask the reviewer first for expensive agents (Research with search, Code).
 6. **Per-project daily spend cap** default.
+7. **File formats in the first pass**: PDF + DOCX + PPTX + XLSX (recommended) · PDF only.
+8. **PNG export of HTML mockups** (needs a headless browser, e.g. Playwright, as an optional dependency) · skip (HTML + PDF only; recommended).
+9. **Email waits for its attachment** to be approved (recommended) · only a note in *Needs your input*.
+10. **Max total attachment size**: 15 MB (recommended) · up to Gmail's limit.
