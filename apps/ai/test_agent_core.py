@@ -345,3 +345,42 @@ class ChatTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("revise THIS", block)
         self.assertIn("OLD", block)
         self.assertEqual(block.count("</untrusted_source>"), block.count("<untrusted_source"))
+
+
+class EmailExtrasTest(unittest.TestCase):
+    def req(self, **kw):
+        from brief import FileIn
+        return agents.RunRequest(**{**sample_brief().model_dump(), "files": [FileIn(id="11111111-1111-1111-1111-111111111111", title="Launch deck", agent="marketing", state="ready").model_dump()], **kw})
+
+    def test_suggested_attachments_come_only_from_the_offered_files(self):
+        r = self.req()
+        got = agents._suggested_files(r, {"attach_ids": ["11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "11111111-1111-1111-1111-111111111111", 7]})
+        self.assertEqual(got, ["11111111-1111-1111-1111-111111111111"])
+        self.assertEqual(agents._suggested_files(sample_brief_req(), {"attach_ids": ["x"]}), [])
+
+    def test_facts_are_cleaned_and_sources_normalised(self):
+        out = agents._facts({"facts_used": [{"fact": "Launch is November 22", "source": "Decision"}, {"fact": "x", "source": "gossip"}, {"fact": " "}, "nope"]})
+        self.assertEqual(out, [{"fact": "Launch is November 22", "source": "decision"}, {"fact": "x", "source": "project"}])
+
+    def test_the_brief_lists_attachable_files_by_id(self):
+        text = render_brief(self.req())
+        self.assertIn("id 11111111-1111-1111-1111-111111111111: Launch deck (marketing, ready)", text)
+        self.assertNotIn("Files from other work", render_brief(sample_brief()))
+
+    def test_the_task_wording_that_implies_a_file_is_detected(self):
+        for t in ("Send the deck to leadership", "Email the report with the PDF attached", "Send the proposal to Dana", "attach the plan"):
+            self.assertTrue(agents.ATTACH_WORDS.search(t), t)
+        for t in ("Tell leadership the launch moved", "Reply to Dana about the budget"):
+            self.assertFalse(agents.ATTACH_WORDS.search(t), t)
+
+
+def sample_brief_req():
+    return agents.RunRequest(**sample_brief().model_dump())
+
+
+class AttachClaimTest(unittest.TestCase):
+    def test_wording_that_claims_an_attachment_is_detected(self):
+        for t in ("Please find the proposal attached.", "See the attachment.", "I have enclosed the plan.", "Please find our proposal below"):
+            self.assertTrue(agents.ATTACH_CLAIM.search(t), t)
+        for t in ("We launch on November 22.", "Let me know if you have questions.", "The deck is ready for review."):
+            self.assertFalse(agents.ATTACH_CLAIM.search(t), t)
