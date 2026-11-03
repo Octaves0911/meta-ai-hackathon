@@ -53,6 +53,13 @@ class PriorWork(BaseModel):
     summary: str = Field(default="", max_length=600)
 
 
+class FileIn(BaseModel):
+    id: str = Field(max_length=64)       # the producing execution; this is what an email draft attaches
+    title: str = Field(max_length=300)
+    agent: str = Field(max_length=40)
+    state: str = Field(default="", max_length=40)  # ready | awaiting_approval | working | ...
+
+
 class BriefIn(BaseModel):
     task: TaskIn
     context: list[CtxItem] = Field(default_factory=list, max_length=12)
@@ -62,6 +69,7 @@ class BriefIn(BaseModel):
     decisions: list[DecisionIn] = Field(default_factory=list, max_length=12)
     neighbours: list[NeighbourIn] = Field(default_factory=list, max_length=12)
     prior_work: list[PriorWork] = Field(default_factory=list, max_length=4)
+    files: list[FileIn] = Field(default_factory=list, max_length=12)  # deliverables of other work that an email could attach
     allow_web: bool = True  # false when the project forbids external lookups (docs/09 §2.1)
 
 
@@ -133,6 +141,9 @@ def render_brief(b: BriefIn) -> str:
         rows = [f"- {sanitize_label(p.title, 120)} ({p.agent}): {_clean(p.summary)}" for p in b.prior_work]
         parts.append("Earlier approved work on similar tasks (reuse, stay consistent):\n<untrusted_source label=\"prior work\">" + "\n".join(_fit(rows, BUDGET["prior"])) + "</untrusted_source>")
 
+    if b.files:
+        rows = [f"- id {f.id}: {sanitize_label(f.title, 120)} ({f.agent}, {f.state or 'unknown state'})" for f in b.files]
+        parts.append("Files from other work that an email could attach (refer to them ONLY by these ids; a file that is not ready yet can still be chosen, the reviewer will see its progress):\n" + "\n".join(_fit(rows, 1200)))
     parts.append("Project context:\n" + render_context(b.context))
     return "\n\n".join(parts)
 

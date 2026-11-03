@@ -2,6 +2,7 @@ import { CheckCircle2, Mail, Send, ShieldCheck } from 'lucide-react';
 import { useState } from 'react';
 import type { ExecutionDetail } from '@meetpilot/shared';
 import { api } from '../lib/api';
+import { Chip, kb, useAttachments } from './EmailAttachments';
 import { Modal, toast } from '../ui';
 
 /** After approval: allow sending (separate permission), review the exact email, confirm, send. Every send is listed. */
@@ -11,6 +12,7 @@ export function SendEmailPanel({ d, onDone }: { d: ExecutionDetail; onDone: () =
   const [error, setError] = useState('');
   const [needsPermission, setNeedsPermission] = useState(false);
   const [busy, setBusy] = useState(false);
+  const att = useAttachments(d.id, d.status === 'approved' && !!draft);
   if (!draft || d.status !== 'approved' || !d.send) return null;
 
   const p = draft.payload ?? {};
@@ -42,18 +44,25 @@ export function SendEmailPanel({ d, onDone }: { d: ExecutionDetail; onDone: () =
     <div className="card" style={{ marginTop: 16 }}>
       <h3 className="row" style={{ gap: 8 }}><Mail size={17} /> Send email</h3>
       {d.send.sent.map((s, i) => (
-        <p key={i} className="note-inline success" role="status"><CheckCircle2 size={17} style={{ flex: 'none', marginTop: 2 }} /> Sent {new Date(s.sentAt).toLocaleString()} from {s.from ?? 'your Gmail'} to {s.to.join(', ')}{s.cc.length ? ` (cc ${s.cc.join(', ')})` : ''} — “{s.subject}”</p>
+        <p key={i} className="note-inline success" role="status"><CheckCircle2 size={17} style={{ flex: 'none', marginTop: 2 }} /> Sent {new Date(s.sentAt).toLocaleString()} from {s.from ?? 'your Gmail'} to {s.to.join(', ')}{s.cc.length ? ` (cc ${s.cc.join(', ')})` : ''} — “{s.subject}”{s.attachments?.length ? ` with ${s.attachments.map((a) => a.filename).join(', ')}` : ''}</p>
       ))}
       {!already && (
         <>
           <p className="muted">Nothing is sent automatically. You will see the recipients and the exact text before it goes out.</p>
           {to.length === 0 && <p className="error">Add at least one recipient in the draft before sending.</p>}
+          {(att.data?.selected.length ?? 0) > 0 && (
+            <div className="stack" style={{ gap: 8, margin: '10px 0' }} aria-label="Attachments">
+              <strong>Attachments</strong>
+              {att.data!.selected.map((c) => <Chip key={c.executionId} chip={c} />)}
+              {!att.allReady && <p className="note-inline info" role="status"><span>Sending is waiting for {att.data!.selected.filter((c) => c.state !== 'ready').length} attachment(s) to be approved. This page updates by itself.</span></p>}
+            </div>
+          )}
           {!granted ? (
             <div>
               <p>MeetPilot can only <strong>read</strong> your Gmail today. To send this email, allow sending — you will be taken to Google and brought back here.</p>
               <button className="primary" onClick={allow} disabled={busy || to.length === 0}><ShieldCheck size={16} /> Allow sending via Gmail</button>
             </div>
-          ) : <button className="primary" onClick={() => setConfirming(true)} disabled={to.length === 0}><Send size={16} /> Send via Gmail…</button>}
+          ) : <button className="primary" onClick={() => setConfirming(true)} disabled={to.length === 0 || !att.allReady} title={att.allReady ? undefined : 'Waiting for attachments to be approved'}><Send size={16} /> Send via Gmail…</button>}
         </>
       )}
       {error && <p className="error" role="alert">{error}</p>}
@@ -66,6 +75,8 @@ export function SendEmailPanel({ d, onDone }: { d: ExecutionDetail; onDone: () =
           <dt>Subject</dt><dd>{p.subject}</dd>
         </dl>
         <pre className="mail-preview">{p.body}</pre>
+        {(att.data?.selected.length ?? 0) === 0 && /\b(attached|attachment|enclosed|please find)\b/i.test(String(p.body ?? '')) && <p className="note-inline" role="alert" style={{ margin: '10px 0 0' }}>The text mentions an attachment, but no file is attached. Cancel to attach one or edit the text.</p>}
+        {(att.data?.selected.length ?? 0) > 0 && <p style={{ margin: '10px 0 0' }}><strong>Attached:</strong> {att.data!.selected.flatMap((c) => c.files).map((f) => `${f.filename} (${kb(f.size)})`).join(', ')}</p>}
         {p.thread_id && <p className="faint" style={{ fontSize: 12.5, marginTop: 8 }}>Sent as a reply in your existing thread.</p>}
         {error && <p className="error" role="alert">{error}</p>}
         <div className="dialog-actions"><button onClick={() => setConfirming(false)} disabled={busy}>Cancel</button><button className="primary" onClick={send} disabled={busy}>{busy ? 'Sending…' : 'Send email'}</button></div>

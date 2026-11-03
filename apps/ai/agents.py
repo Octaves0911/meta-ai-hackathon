@@ -176,6 +176,7 @@ def _mock_run(name: str, req: RunRequest, state: _State) -> RunResponse:
         payload = {
             "to": to, "cc": [], "subject": reply.get("subject") or t.title, "body": body, "missing_recipients": not to,
             "open_questions": [] if to else ["Who should receive this email?"], "sources": [src.label] if src else [c.label for c in req.context],
+            "facts": [], "attachments": [], "suggested_attachments": [f.id for f in req.files][:1] if ATTACH_WORDS.search(f"{t.title} {t.description or ''}") else [],
             **{k: v for k, v in reply.items() if k in ("thread_id", "in_reply_to", "references") and v},
         }
         arts = [ArtifactOut(type="email_draft", title="Email draft", payload=payload)]
@@ -232,8 +233,35 @@ async def _draft_email(req: RunRequest, task: str, consulted: str, model: str | 
         "You draft emails. NEVER invent email addresses: only use addresses present in the task or sources; otherwise leave `to` empty and set "
         "missing_recipients=true. Every date, number and name must come from the brief; use the CURRENT decision values. "
         "If you are replying to one of the source emails, set reply_to_source to that source's exact label. "
-        'Return {"to":[],"cc":[],"subject":"","body":"","missing_recipients":bool,"open_questions":[],"summary":"","reply_to_source":null}.',
+        "Write in the language of the thread you reply to, otherwise the language of the meeting, otherwise English. "
+        "facts_used lists every date, number, name or decision you rely on, each with its source (decision, meeting, thread, task or project). "
+        "attach_ids: ONLY ids from 'Files from other work that an email could attach' when the task implies sending a file (e.g. 'send the deck'); never invent ids; empty if no file is implied. "
+        'Return {"to":[],"cc":[],"subject":"","body":"","missing_recipients":bool,"open_questions":[],"summary":"","reply_to_source":null,"facts_used":[{"fact":"","source":""}],"attach_ids":[]}.',
         f"{task}{consulted}{fix}", max_tokens=1500, model=model)
+
+
+ATTACH_WORDS = re.compile(r"\b(attach\w*|send (?:the |a |an )?(?:deck|report|pdf|document|presentation|plan|proposal|brief|file|slides?|mockups?|designs?)|with the (?:deck|report|pdf|document|presentation|plan|proposal))\b", re.I)
+ATTACH_CLAIM = re.compile(r"\b(attached|attachment|enclosed|adjunto|adjuntos|ci-joint|anexo|beigef\w+)\b|please find", re.I)
+FACT_SOURCES = {"decision", "meeting", "thread", "task", "project"}
+
+
+def _suggested_files(req: RunRequest, data: dict) -> list[str]:
+    """Only ids the brief actually offered; at most 3; never invented."""
+    offered = {f.id for f in req.files}
+    out: list[str] = []
+    for i in data.get("attach_ids") or []:
+        if isinstance(i, str) and i in offered and i not in out:
+            out.append(i)
+    return out[:3]
+
+
+def _facts(data: dict) -> list[dict]:
+    out = []
+    for f in data.get("facts_used") or []:
+        if isinstance(f, dict) and str(f.get("fact") or "").strip():
+            src = str(f.get("source") or "").strip().lower()
+            out.append({"fact": str(f["fact"]).strip()[:200], "source": src if src in FACT_SOURCES else "project"})
+    return out[:8]
 
 
 def _email_payload(req: RunRequest, data: dict) -> tuple[dict, "CtxItem | None"]:
@@ -245,6 +273,7 @@ def _email_payload(req: RunRequest, data: dict) -> tuple[dict, "CtxItem | None"]
     payload = {"to": to, "cc": keep(data.get("cc")), "subject": str(data.get("subject") or reply.get("subject") or req.task.title)[:300],
                "body": str(data.get("body", ""))[:50000], "missing_recipients": not to,
                "open_questions": [str(x) for x in data.get("open_questions", [])][:5], "sources": [src.label] if src else [c.label for c in req.context],
+               "facts": _facts(data), "suggested_attachments": _suggested_files(req, data), "attachments": [],
                **{k: v for k, v in reply.items() if k in ("thread_id", "in_reply_to", "references") and v}}
     return payload, src
 
@@ -294,6 +323,10 @@ async def _real_run(name: str, req: RunRequest, state: _State, trace: Trace) -> 
         open_q = [*payload.get("open_questions", []), *check.open_questions, *[f"Confirm {b}" for b in check.blocking]]
         if not payload["to"]:
             open_q.insert(0, "Who should receive this email?")
+        if ATTACH_CLAIM.search(payload["body"]) and not payload["suggested_attachments"]:
+            open_q.append("The email text mentions an attachment, but no file is attached. Attach one or reword the email.")
+        if ATTACH_WORDS.search(f"{req.task.title} {req.task.description or ''}") and not payload["suggested_attachments"]:
+            open_q.append("The task mentions a file to send, but no matching deliverable was found. Attach one once it is ready.")
         payload["open_questions"] = list(dict.fromkeys(open_q))[:6]
         conf = check.confidence * (0.6 if check.blocking else 1.0) * (0.85 if not payload["to"] else 1.0)
         return RunResponse(summary=str(data.get("summary") or f"Drafted an email for “{req.task.title}”.")[:500],

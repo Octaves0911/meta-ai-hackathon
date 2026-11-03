@@ -260,13 +260,14 @@ export class Connector {
   }
 
   /** Send one approved email as the user. The caller (backend) has already checked approval, confirmation and duplicates. */
-  async sendMail(a: { projectId: string; userId: string; to: string[]; cc?: string[]; subject: string; body: string; threadId?: string | null; inReplyTo?: string | null; references?: string | null }) {
+  async sendMail(a: { projectId: string; userId: string; to: string[]; cc?: string[]; subject: string; body: string; threadId?: string | null; inReplyTo?: string | null; references?: string | null; attachments?: { filename: string; mime: string; data_b64: string }[] }) {
     this.ensureReady();
     const { rows } = await this.db.query("select * from connections where project_id = $1 and user_id = $2 and provider = 'gmail' and $3 = any(scopes) and token_ciphertext is not null", [a.projectId, a.userId, google.SEND_SCOPE]);
     const c = rows[0];
     if (!c) throw new ConnectorError(409, 'send_permission_required', 'allow MeetPilot to send email from your Gmail first');
     let raw: string;
-    try { raw = buildRaw({ from: c.config.account, to: a.to, cc: a.cc, subject: a.subject, body: a.body, inReplyTo: a.inReplyTo, references: a.references }); }
+    try { raw = buildRaw({ from: c.config.account, to: a.to, cc: a.cc, subject: a.subject, body: a.body, inReplyTo: a.inReplyTo, references: a.references,
+      attachments: (a.attachments ?? []).map((f) => ({ filename: f.filename, mime: f.mime, data: Buffer.from(f.data_b64, 'base64') })) }); }
     catch (e) { if (e instanceof MimeError) throw new ConnectorError(400, 'invalid_email', e.message); throw e; }
     try {
       const sent = await google.sendMessage(await this.accessToken(c), raw, a.threadId);
