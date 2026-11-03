@@ -190,10 +190,9 @@ def _mock_run(name: str, req: RunRequest, state: _State) -> RunResponse:
     if name == "research":
         arts.append(ArtifactOut(type="link", title="Sources (1)", payload={"items": [{"title": "Example pricing page", "url": "https://example.com/pricing", "host": "example.com"}], "searched_on": "mock"}))
     if name == "designer":
-        svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect width="320" height="180" fill="#1b2330"/>'
-               f'<rect x="20" y="20" width="280" height="30" rx="6" fill="#6c8cff"/><text x="30" y="40" fill="#fff" font-size="14" font-family="sans-serif">{_esc(t.title[:34])}</text>'
-               '<rect x="20" y="64" width="130" height="96" rx="6" fill="#2a3446"/><rect x="170" y="64" width="130" height="96" rx="6" fill="#2a3446"/></svg>')
-        arts.append(ArtifactOut(type="image", title="Concept sketch", payload={"mime": "image/svg+xml", "svg": svg}))
+        for label, bg, fg in (("A", "#0f1424", "#ffffff"), ("B", "#fbfaf7", "#1c1b19")):
+            html = f'<!doctype html><html><body style="margin:0;background:{bg};color:{fg};font-family:sans-serif"><div style="padding:40px"><h1>{_esc(t.title[:60])}</h1><p>Mock direction {label}</p><button style="padding:12px 20px;border:0;border-radius:10px">Get started</button></div></body></html>'
+            arts.append(ArtifactOut(type="html", title=f"Mockup {label}", payload={"html": html, "direction": label, "name": f"Direction {label}"}))
     return RunResponse(summary=f"{name.title()} agent finished “{t.title}”{rev}.", notes="Generated in mock mode.", artifacts=arts, consultations=state.consultations)
 
 
@@ -289,6 +288,10 @@ async def _real_run(name: str, req: RunRequest, state: _State, trace: Trace) -> 
         from marketing import run_marketing
 
         return await run_marketing(req, state, trace)
+    if name == "designer":
+        from designer import run_designer
+
+        return await run_designer(req, state, trace)
     model = agent_model(name)
     task = _task_block(req)
     async with trace.step("read", "Read the brief", {"lines": len(req.source_lines), "decisions": len(req.decisions), "neighbours": len(req.neighbours),
@@ -390,7 +393,7 @@ def attach_pdfs(out: RunResponse, name: str, req: RunRequest) -> None:
             continue
         many = sum(1 for a in out.artifacts if a.type == "markdown") > 1
         fname = f"{_slug(req.task.title)}{'-' + _slug(art.title or '') if many else ''}{'-slides' if wants_deck else ''}.pdf"
-        out.artifacts.append(ArtifactOut(type="pdf", title=f"{art.title} (PDF)" if many else f"{'Slides' if wants_deck else 'Report'} (PDF)", payload={
+        out.artifacts.append(ArtifactOut(type="pdf", title=f"{'Slides' if wants_deck else art.title or 'Report'} (PDF)", payload={
             "filename": fname, "mime": "application/pdf", "pages": pages, "size": len(data), "layout": "slides" if wants_deck else "document",
             "file_b64": base64.b64encode(data).decode("ascii")}))
         if wants_deck:
