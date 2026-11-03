@@ -31,6 +31,15 @@ app.include_router(build_agents_router(require_secret))
 app.include_router(build_route_router(require_secret))
 
 
+@app.get("/sandbox/status", dependencies=[Depends(require_secret)])
+def sandbox_status() -> dict:
+    """Is code verification available? Used to explain 'Not tested' (docs/09 §2.5). Never starts a sandbox."""
+    mode = os.environ.get("SANDBOX_MODE", "").lower() or ("modal" if os.environ.get("MODAL_TOKEN_ID") else "off")
+    configured = mode == "mock" or (mode == "modal" and bool(os.environ.get("MODAL_TOKEN_ID") and os.environ.get("MODAL_TOKEN_SECRET")))
+    reason = "" if configured else ("The sandbox is switched off (SANDBOX_MODE=off)." if mode == "off" else "Modal credentials are not configured (MODAL_TOKEN_ID / MODAL_TOKEN_SECRET).")
+    return {"mode": mode, "configured": configured, "reason": reason, "live": mode == "modal" and configured}
+
+
 @app.get("/health")
 def health() -> dict:
     return {"service": "ai", "status": "ok"}
