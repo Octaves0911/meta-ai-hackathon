@@ -126,6 +126,14 @@ ok('owner can switch external lookups off; members cannot', (await api(`/project
 ok('invalid settings are refused', (await api(`/projects/${P.id}/settings`, 'rita', 'PATCH', { noExternalLookups: 'yes' })).status === 400);
 await api(`/projects/${P.id}/settings`, 'rita', 'PATCH', { noExternalLookups: false });
 
+// brand and voice note (owner only, 1,500 chars, blank clears)
+const note = 'Friendly and plain. Say teams, never users.';
+ok('owner saves a brand note; it shows on the project', (await api(`/projects/${P.id}/settings`, 'rita', 'PATCH', { brandNote: `  ${note}  ` })).body?.brandNote === note
+  && (await api('/projects', 'rita')).body.find((p) => p.id === P.id).brandNote === note);
+ok('members cannot change it; too long is refused', [403, 404].includes((await api(`/projects/${P.id}/settings`, 'dev', 'PATCH', { brandNote: 'x' })).status) && (await api(`/projects/${P.id}/settings`, 'rita', 'PATCH', { brandNote: 'x'.repeat(1501) })).status === 400);
+ok('changing the web switch leaves the note alone, and a blank note clears it', (await api(`/projects/${P.id}/settings`, 'rita', 'PATCH', { noExternalLookups: false })).body.brandNote === note
+  && (await api(`/projects/${P.id}/settings`, 'rita', 'PATCH', { brandNote: '   ' })).body.brandNote === null);
+
 // live chat with the agent, then Apply & rerun
 const t2 = (await db.query("insert into tasks(meeting_id, project_id, title, description, finalized, assigned_to) values ($1,$2,'Research the market', 'Dev will research the market', true, $3) returning id", [M, P.id, id('dev')])).rows[0].id;
 const ex2 = (await db.query("insert into executions(task_id, agent, status, reviewer_id, error) values ($1,'research','failed',$2,'boom') returning id", [t2, id('dev')])).rows[0].id;
