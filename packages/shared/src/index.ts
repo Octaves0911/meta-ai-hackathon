@@ -189,6 +189,8 @@ export interface ExecutionSummary {
   routeReason: string | null; reviewer: TaskUser | null; assignee: TaskUser | null; dueDate: string | null; updatedAt: string;
   /** 0..1 self-assessed readiness of the work (quality gate); routeConfidence is how sure the router was. */
   confidence: number | null; routeConfidence: number | null;
+  /** Design work with two directions: which one the reviewer approved. */
+  approvedChoice: 'A' | 'B' | null;
   /** Planned agents for this task, e.g. designer → code (web pages only), and the agent suggested when the router was unsure. */
   stagePlan: { stages: { agent: AgentName; goal: string }[]; scope: 'deliverable' | 'build'; suggestedAgent?: AgentName | null; missingInputs?: string[] } | null;
 }
@@ -211,6 +213,8 @@ export interface ExecutionDetail extends ExecutionSummary {
 export const RunWithBody = z.object({ agent: z.enum(['research', 'marketing', 'designer', 'communication', 'code']) });
 export const ReviewBody = z.object({
   verdict: z.enum(['approve', 'changes', 'reject']),
+  /** Required when approving design work that offers two directions. */
+  choice: z.enum(['A', 'B']).optional(),
   comment: z.string().trim().max(4000).optional(),
   lineComments: z.array(z.object({ file: z.string().max(300).optional(), line: z.number().int().min(0).optional(), text: z.string().trim().min(1).max(2000) })).max(50).optional(),
 });
