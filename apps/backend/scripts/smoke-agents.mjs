@@ -5,7 +5,7 @@
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const pg = require('pg');
-const B = 'http://localhost:4000';
+const B = process.env.BACKEND_URL ?? 'http://localhost:4000';
 const db = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const api = async (path, user, method = 'GET', json) => {
   const r = await fetch(B + '/api' + path, { method, headers: { ...(json ? { 'content-type': 'application/json' } : {}), ...(user ? { 'x-user': user } : {}) }, body: json ? JSON.stringify(json) : undefined });

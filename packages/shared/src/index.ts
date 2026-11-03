@@ -33,6 +33,8 @@ export const Events = {
   captionInterim: 'caption:interim',
   captionFinal: 'caption:final',
   captionStatus: 'caption:status',
+  executionUpdate: 'execution:update',
+  executionStep: 'execution:step',
 } as const;
 
 export const SERVICE_PORTS = { web: 5173, backend: 4000, ai: 5001, connector: 6100 } as const;
@@ -152,18 +154,28 @@ export interface ExecutionSummary {
   id: string; taskId: string; taskTitle: string; meetingId: string; meetingTitle: string;
   agent: AgentName | null; status: ExecutionStatus; revision: number; summary: string | null; error: string | null;
   routeReason: string | null; reviewer: TaskUser | null; assignee: TaskUser | null; dueDate: string | null; updatedAt: string;
+  /** 0..1 self-assessed readiness of the work (quality gate); routeConfidence is how sure the router was. */
+  confidence: number | null; routeConfidence: number | null;
+  /** Planned agents for this task, e.g. designer → code (web pages only), and the agent suggested when the router was unsure. */
+  stagePlan: { stages: { agent: AgentName; goal: string }[]; scope: 'deliverable' | 'build'; suggestedAgent?: AgentName | null; missingInputs?: string[] } | null;
 }
+export type StepKind = 'plan' | 'search' | 'read' | 'consult' | 'tool' | 'draft' | 'check';
+export interface ExecutionStep { seq: number; revision: number; kind: StepKind; label: string; detail: Record<string, unknown>; status: 'running' | 'done' | 'failed'; startedAt: string; endedAt: string | null }
+export interface ExecutionUsage { calls: number; promptTokens: number; completionTokens: number; costUsd: number; models: string[] }
 export interface ExecutionArtifact {
-  id: string; type: 'markdown' | 'image' | 'pdf' | 'video' | 'diff' | 'link' | 'file' | 'email_draft';
+  id: string; type: 'markdown' | 'image' | 'pdf' | 'video' | 'diff' | 'link' | 'file' | 'email_draft' | 'html' | 'table';
   title: string | null; uri: string | null; payload: Record<string, any> | null; revision: number;
 }
 export interface Consultation { id: string; fromAgent: string; toAgent: string; question: string; answer: string | null; depth: number }
 export interface ExecutionReview { revision: number; verdict: 'approve' | 'changes'; comment: string | null; lineComments: unknown[] | null; reviewer: string | null; createdAt: string }
 export interface ExecutionDetail extends ExecutionSummary {
   task: Task; notes: string | null; artifacts: ExecutionArtifact[]; consultations: Consultation[]; reviews: ExecutionReview[]; canReview: boolean;
+  /** Things the agent could not settle and a human must supply or confirm (shown first on a review). */
+  openQuestions: string[]; usage: ExecutionUsage | null; steps: ExecutionStep[];
   /** Email-drafting runs only: whether the reviewer allowed sending via Gmail, and every send made from this run (audit). */
   send: { granted: boolean | null; account: string | null; sent: { sentAt: string; from: string | null; to: string[]; cc: string[]; subject: string; messageId: string | null }[] } | null;
 }
+export const RunWithBody = z.object({ agent: z.enum(['research', 'marketing', 'designer', 'communication', 'code']) });
 export const ReviewBody = z.object({
   verdict: z.enum(['approve', 'changes']),
   comment: z.string().trim().max(4000).optional(),
