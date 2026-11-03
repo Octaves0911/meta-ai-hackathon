@@ -92,6 +92,19 @@ export async function executionRoutes(app: FastifyInstance) {
     };
   });
 
+  /** Bytes of a generated file for the people who can see the execution. Never executable in our origin: nosniff + sandboxing CSP. */
+  app.get<{ Params: { id: string } }>('/artifacts/:id/file', async (req, reply) => {
+    const me = await requireUser(app, req);
+    uuid(req.params.id);
+    const { rows } = await app.db.query(
+      `select f.filename, f.mime, f.data, a.execution_id from execution_files f join execution_artifacts a on a.id = f.artifact_id where f.artifact_id = $1`, [req.params.id]);
+    if (!rows[0]) throw new HttpError(404, 'not_found', 'file not found');
+    await load(rows[0].execution_id, me); // same visibility as the review itself: reviewer, assignee or meeting owner
+    return reply.header('content-type', rows[0].mime).header('x-content-type-options', 'nosniff').header('cache-control', 'private, max-age=0')
+      .header('content-security-policy', "default-src 'none'; sandbox")
+      .header('content-disposition', `inline; filename="${String(rows[0].filename).replace(/["\r\n]/g, '_')}"`).send(rows[0].data);
+  });
+
   /** Reviewer overrides "left for a human": run a specialist anyway. */
   app.post<{ Params: { id: string } }>('/executions/:id/run-with', async (req, reply) => {
     const me = await requireUser(app, req);
@@ -139,6 +152,8 @@ export async function executionRoutes(app: FastifyInstance) {
       if (body.verdict === 'approve') {
         await c.query("update executions set status = 'approved', updated_at = now() where id = $1", [e.id]);
         await c.query("update tasks set status = 'done' where id = $1", [e.task_id]);
+        // Only approved files can be attached to an email or shared on (docs/09 §1.8).
+        await c.query(`update execution_artifacts set payload = payload || '{"attachable": true}'::jsonb where execution_id = $1 and revision = $2 and type in ('pdf', 'file')`, [e.id, e.revision]);
       } else if (body.verdict === 'reject') {
         // Stop here: the task goes back to a human, the reason stays in the review history.
         await c.query("update executions set status = 'rejected', updated_at = now() where id = $1", [e.id]);

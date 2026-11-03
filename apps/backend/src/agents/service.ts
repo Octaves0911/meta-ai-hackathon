@@ -3,6 +3,7 @@ import { Events } from '@meetpilot/shared';
 import { createNotification } from '../services/notifications.js';
 import { enqueue, JobRunner } from '../services/jobs.js';
 import { buildBrief } from './brief.js';
+import { MAX_FILES_PER_RUN, prepareFile } from './files.js';
 import { routeTask } from './router.js';
 
 const aiUrl = () => process.env.AI_URL ?? 'http://localhost:5001';
@@ -130,9 +131,20 @@ export class AgentService {
     const c = await this.db.connect();
     try {
       await c.query('begin');
+      let files = 0;
       for (const a of out.artifacts) {
-        await c.query('insert into execution_artifacts(execution_id, revision, type, title, payload) values ($1,$2,$3,$4,$5)',
-          [e.id, e.revision, a.type, a.title, a.content != null ? { content: a.content } : a.payload]);
+        const { file_b64: _drop, ...rest } = (a.payload ?? {}) as Record<string, any>;
+        let prepared: ReturnType<typeof prepareFile> | null = null;
+        if (a.payload?.file_b64) {
+          try { if (files >= MAX_FILES_PER_RUN) throw new Error('too many files'); prepared = prepareFile(a.payload); files++; }
+          catch (err) { this.app.log.warn({ err: (err as Error).message, title: a.title }, 'agent file rejected'); continue; } // the rest of the work is still delivered
+        }
+        const { rows: ins } = await c.query('insert into execution_artifacts(execution_id, revision, type, title, payload) values ($1,$2,$3,$4,$5) returning id',
+          [e.id, e.revision, a.type, a.title, a.content != null ? { content: a.content } : (prepared ? { ...rest, filename: prepared.filename, mime: prepared.mime, size: prepared.size, sha256: prepared.sha256, attachable: false } : a.payload)]);
+        if (prepared) {
+          await c.query('insert into execution_files(artifact_id, filename, mime, size, sha256, data) values ($1,$2,$3,$4,$5,$6)', [ins[0].id, prepared.filename, prepared.mime, prepared.size, prepared.sha256, prepared.data]);
+          await c.query("update execution_artifacts set payload = payload || $2::jsonb where id = $1", [ins[0].id, JSON.stringify({ url: `/artifacts/${ins[0].id}/file` })]);
+        }
       }
       // The collaboration log shows what this revision's work was built on, not an accumulation of earlier passes.
       await c.query('delete from agent_consultations where execution_id = $1', [e.id]);
