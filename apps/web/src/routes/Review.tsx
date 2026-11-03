@@ -4,6 +4,7 @@ import { Link, Navigate, useParams } from 'react-router-dom';
 import { MAX_REVISIONS, type ExecutionDetail } from '@meetpilot/shared';
 import { AgentTrace, ConfidencePill, NeedsInput, RunWith, StagePlan, usd } from '../components/AgentInsights';
 import { AppShell } from '../components/AppShell';
+import { ReviewChat, RevisionDiff } from '../components/ReviewChat';
 import { SendEmailPanel } from '../components/SendEmailPanel';
 import { ArtifactView } from '../components/viewers/ArtifactView';
 import { api, useSession } from '../lib/api';
@@ -115,7 +116,11 @@ export function Review() {
           </div>
         )}
 
+        <RevisionDiff d={d} />
+
         <SendEmailPanel d={d} onDone={load} />
+
+        <ReviewChat d={d} onChanged={load} />
 
         {d.reviews.length > 0 && (
           <div className="card" style={{ marginTop: 16 }}>

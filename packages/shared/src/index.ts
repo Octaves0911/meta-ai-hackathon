@@ -35,6 +35,7 @@ export const Events = {
   captionStatus: 'caption:status',
   executionUpdate: 'execution:update',
   executionStep: 'execution:step',
+  executionMessage: 'execution:message',
 } as const;
 
 export const SERVICE_PORTS = { web: 5173, backend: 4000, ai: 5001, connector: 6100 } as const;
@@ -149,7 +150,32 @@ export const UpdateTaskBody = z.object({
 
 export type ExecutionStatus = 'routed' | 'running' | 'awaiting_review' | 'changes_requested' | 'approved' | 'rejected' | 'failed' | 'skipped_human';
 export type AgentName = 'research' | 'marketing' | 'designer' | 'communication' | 'code';
-export const MAX_REVISIONS = 3;
+export const MAX_REVISIONS = 5;
+export type MessageKind = 'ask' | 'change' | 'clarify';
+export interface ExecutionMessage { id: string; revision: number; role: 'user' | 'agent'; kind: MessageKind; text: string; proposedChange: string | null; author: string | null; createdAt: string }
+export const ChatBody = z.object({ text: z.string().trim().min(1).max(2000) });
+export const RerunBody = z.object({ comment: z.string().trim().max(2000).optional() });
+export const MAX_CHAT_MESSAGES = 60;
+
+export type DiffLine = { type: 'same' | 'add' | 'del'; text: string };
+/** Line diff (longest common subsequence) for comparing two revisions of a text deliverable. Very large inputs fall back to a coarse diff. */
+export function lineDiff(before: string, after: string, maxLines = 1500): DiffLine[] {
+  const a = before.split('\n'), b = after.split('\n');
+  if (a.length > maxLines || b.length > maxLines) return [...a.map((text) => ({ type: 'del' as const, text })), ...b.map((text) => ({ type: 'add' as const, text }))];
+  const n = a.length, m = b.length;
+  const lcs: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+  const out: DiffLine[] = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { out.push({ type: 'same', text: a[i] }); i++; j++; }
+    else if (lcs[i + 1][j] >= lcs[i][j + 1]) out.push({ type: 'del', text: a[i++] });
+    else out.push({ type: 'add', text: b[j++] });
+  }
+  while (i < n) out.push({ type: 'del', text: a[i++] });
+  while (j < m) out.push({ type: 'add', text: b[j++] });
+  return out;
+}
 export interface ReviewCounts { needsReview: number; working: number }
 export interface ExecutionSummary {
   id: string; taskId: string; taskTitle: string; meetingId: string; meetingTitle: string; projectId: string; projectName: string;

@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 import base64
 
 from brief import BriefIn, CtxItem, TaskIn, brief_text_for_facts, render_brief, render_context  # noqa: F401  (TaskIn/CtxItem re-exported)
-from llm import agent_model, begin_usage, complete_json, complete_text, sanitize_label
+from llm import agent_model, begin_usage, chat_json, complete_json, complete_text, sanitize_label
 from files import build_pdf, markdown_to_spec
 from quality import Check, self_check, unsupported_facts
 from runtrace import LimitExceeded, Trace
@@ -44,6 +44,7 @@ class Feedback(BaseModel):
     comment: str | None = Field(default=None, max_length=4000)
     line_comments: list[dict] = Field(default_factory=list, max_length=50)
     previous_summary: str | None = Field(default=None, max_length=4000)
+    previous_output: str | None = Field(default=None, max_length=12000)  # the deliverable being revised (text), so the agent edits it
 
 
 WALL_CLOCK_SECONDS = 170  # per run (docs/09 §1.6); the backend's own timeout is 180 s
@@ -105,7 +106,9 @@ def _task_block(req: RunRequest) -> str:
             parts.append(f"Line comments: {req.feedback.line_comments}")
         if req.feedback.previous_summary:
             parts.append(f"Your previous summary: {req.feedback.previous_summary}")
-        parts.append("Edit your previous work to address this; keep what the reviewer did not object to.")
+        if req.feedback.previous_output:
+            parts.append(f"Your previous output (revise THIS):\n<untrusted_source label=\"previous output\">{req.feedback.previous_output.replace('<', ' ').replace('>', ' ')}</untrusted_source>")
+        parts.append("Edit your previous work to address this; keep everything the reviewer did not object to unchanged.")
     return "\n\n".join(parts)
 
 
@@ -348,6 +351,72 @@ def attach_pdfs(out: RunResponse, name: str, req: RunRequest) -> None:
             out.notes = (out.notes + " " if out.notes else "") + "Editable PPTX is not generated yet; this PDF has one slide per page."
 
 
+# ---------------------------------------------------------------- live review chat (docs/09 §1.11)
+CHAT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "reply": {"type": "string"},
+        "kind": {"type": "string", "enum": ["ask", "change", "clarify"]},
+        "proposed_change": {"type": "string"},
+    },
+    "required": ["reply", "kind", "proposed_change"],
+    "additionalProperties": False,
+}
+
+
+class ChatTurn(BaseModel):
+    role: Literal["user", "agent"]
+    text: str = Field(max_length=6000)
+
+
+class ChatRequest(BriefIn):
+    message: str = Field(min_length=1, max_length=2000)
+    current_output: str = Field(default="", max_length=12000)
+    history: list[ChatTurn] = Field(default_factory=list, max_length=14)
+    revision: int = Field(default=0, ge=0, le=10)
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    kind: Literal["ask", "change", "clarify"]
+    proposed_change: str = ""
+    usage: dict = Field(default_factory=dict)
+
+
+def _mock_chat(req: ChatRequest) -> ChatResponse:
+    m = req.message.strip()
+    if m.endswith("?"):
+        return ChatResponse(reply=f"[mock] About “{m[:80]}”: it follows the brief and the current decisions.", kind="ask")
+    if len(m.split()) < 3:
+        return ChatResponse(reply="[mock] Could you say a bit more about what you want changed?", kind="clarify")
+    return ChatResponse(reply=f"[mock] I will change the work as you asked: {m[:120]}. Click Apply & rerun when ready.", kind="change", proposed_change=m[:200])
+
+
+async def chat_with_agent(name: str, req: ChatRequest) -> ChatResponse:
+    usage = begin_usage()
+    if os.environ.get("AGENTS_MODE") == "mock":
+        out = _mock_chat(req)
+        out.usage = usage
+        return out
+    history = "\n".join(f"{'Reviewer' if t.role == 'user' else 'You'}: {t.text}" for t in req.history)
+    data = await chat_json(
+        f"You are {PERSONA[name]}. You produced the work shown below and the reviewer is talking to you live while reviewing it. "
+        "Rules: (1) Questions about the work: answer from the brief and your output, honestly; if the brief does not say, say you do not know. Use kind=ask and proposed_change=\"\". "
+        "(2) A request to change the work: state precisely what you will change in `proposed_change` (1-2 sentences) and confirm in `reply`. Use kind=change. "
+        "You cannot change the work inside this chat: changes are made when the reviewer clicks Apply & rerun, so never say you already changed it. "
+        "(3) If the request is ambiguous or you need a decision, ask ONE specific question. Use kind=clarify. "
+        "Never invent facts, dates or numbers. Keep `reply` under 120 words.",
+        f"{render_brief(req)}\n\nYour current output (revision {req.revision}):\n<untrusted_source label=\"current output\">{req.current_output.replace('<', ' ').replace('>', ' ')}</untrusted_source>"
+        f"\n\nConversation so far:\n{history or '(none)'}\n\nReviewer: {req.message}",
+        CHAT_SCHEMA, max_tokens=500, model=agent_model(name))
+    kind = data.get("kind") if data.get("kind") in ("ask", "change", "clarify") else "ask"
+    reply = str(data.get("reply") or "").strip()[:2000]
+    if not reply:
+        raise HTTPException(status_code=502, detail="agent returned an empty reply")
+    pc = str(data.get("proposed_change") or "").strip()[:500] if kind == "change" else ""
+    return ChatResponse(reply=reply, kind=kind, proposed_change=pc, usage=usage)
+
+
 async def _run(name: str, req: RunRequest) -> RunResponse:
     state = _State()
     usage = begin_usage()
@@ -378,5 +447,9 @@ def build_router(require_secret) -> APIRouter:
             raise HTTPException(status_code=422, detail=f"agent run limit: {e}") from e
         except (KeyError, TypeError, ValueError) as e:
             raise HTTPException(status_code=502, detail=f"agent output invalid: {e}") from e
+
+    @r.post("/agents/{name}/chat", response_model=ChatResponse)
+    async def chat(name: AgentName, req: ChatRequest) -> ChatResponse:
+        return await chat_with_agent(name, req)
 
     return r
