@@ -131,7 +131,11 @@ Order: **Research → Communication → Marketing → Designer → Code** (Resea
 - **Tools**: consult Research (≤2 questions), `get_decisions`, `get_team_tasks`.
 - **Pipeline**: research input → audience & positioning → messaging pillars → channels → **timeline anchored to the actual launch date and task owners from the meeting** → KPIs → budget assumptions (always flagged as assumptions) → write.
 - **Deliverables**: `markdown` plan + `table` (timeline) + **file**: `plan.pdf` (always; for deck/pitch tasks a landscape slide-per-page PDF built from a structured slide spec: title, 3–5 bullets, optional table, one idea per slide). Editable PPTX/DOCX/XLSX later.
-- **Done when**: if the launch date changed in the meeting, the plan uses the new date and says so; every number is either sourced or labelled "assumption".
+- **Brand note (decided)**: a short project-level "brand & voice" note (owner-editable in project settings; ≤ 1,500 chars) is always included in the brief for Marketing, Communication and Designer. No tone inference from documents.
+- **Timeline-fit check (decided)**: before writing, compare the work needed with the time left before the launch date. If it does not fit, say so plainly in *Needs your input* and deliver a reduced-scope plan (what can be done by the date, what slips), never a squeezed unrealistic one.
+- **Plan vs copy (decided)**: the task type is detected first: `plan` (campaign/GTM/positioning), `copy` (press release, launch posts, ad text, announcement) or `both`. For `copy` the **actual text is the main deliverable** (e.g. the press release, the posts), with a short rationale; a plan is not produced instead of the copy.
+- **Hard rule**: KPIs and budget figures not found in the project or in Research's cited results are tagged "assumption".
+- **Done when**: if the launch date changed in the meeting, the plan uses the new date and says so; every number is either sourced or labelled "assumption"; an unfit timeline is flagged with a reduced-scope version; a "write the press release" task yields the release text.
 
 ### 2.4 Designer agent
 - **Handles**: design, logo, banner, mockup, wireframe, UI/UX, poster.
