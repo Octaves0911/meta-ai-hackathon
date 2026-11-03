@@ -62,7 +62,10 @@ export interface User { id: string; username: string; createdAt: string }
 export interface Project {
   id: string; name: string; description: string | null; ownerId: string;
   shareWorkspace: boolean; role: 'owner' | 'member'; createdAt: string;
+  /** Agents never search the web for this project (owner setting). */
+  noExternalLookups: boolean;
 }
+export const ProjectSettingsBody = z.object({ noExternalLookups: z.boolean().optional() });
 export interface ProjectOverview {
   meetings: number; thisWeek: number; avgDurationSec: number; activeNow: number;
   byStatus: Record<MeetingStatus, number>;
@@ -188,7 +191,7 @@ export interface ExecutionSummary {
 }
 export type StepKind = 'plan' | 'search' | 'read' | 'consult' | 'tool' | 'draft' | 'check';
 export interface ExecutionStep { seq: number; revision: number; kind: StepKind; label: string; detail: Record<string, unknown>; status: 'running' | 'done' | 'failed'; startedAt: string; endedAt: string | null }
-export interface ExecutionUsage { calls: number; promptTokens: number; completionTokens: number; costUsd: number; models: string[] }
+export interface ExecutionUsage { calls: number; searches?: number; promptTokens: number; completionTokens: number; costUsd: number; models: string[] }
 export interface ExecutionArtifact {
   id: string; type: 'markdown' | 'image' | 'pdf' | 'video' | 'diff' | 'link' | 'file' | 'email_draft' | 'html' | 'table';
   title: string | null; uri: string | null; payload: Record<string, any> | null; revision: number;
