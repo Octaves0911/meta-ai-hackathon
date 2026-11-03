@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
 import { MAX_REVISIONS, type ExecutionDetail } from '@meetpilot/shared';
 import { AgentTrace, ConfidencePill, NeedsInput, RepoChoice, RunWith, StagePlan, usd } from '../components/AgentInsights';
+import { BuildWithCode, Pipeline } from '../components/Pipeline';
 import { AppShell } from '../components/AppShell';
 import { PullRequestPanel } from '../components/PullRequestPanel';
 import { ReviewChat, RevisionDiff } from '../components/ReviewChat';
@@ -90,7 +91,9 @@ export function Review() {
         </div>
 
         {d.approvedChoice && <div className="note-inline success" role="status"><CheckCircle2 size={18} /> <span><strong>Approved direction {d.approvedChoice}.</strong> {arts.find((a) => a.payload?.direction === d.approvedChoice)?.payload?.name ?? ''}</span></div>}
-        <StagePlan plan={d.stagePlan} />
+        <Pipeline d={d} />
+        {!d.pipeline?.length && <StagePlan plan={d.stagePlan} />}
+        <BuildWithCode d={d} onDone={load} />
         <RepoChoice d={d} onDone={load} />
         <RunWith d={d} onDone={load} />
         {d.status === 'rejected' && <div className="note-inline info" role="status"><Ban size={18} /> <span><strong>Rejected.</strong> {d.reviews.filter((r) => r.verdict === 'reject').at(-1)?.comment ?? ''} The task is back with a person.</span></div>}
@@ -128,7 +131,7 @@ export function Review() {
 
         <SendEmailPanel d={d} onDone={load} />
 
-        <PullRequestPanel d={d} onDone={load} />
+        {(d.agent !== 'code' || arts.some((a) => a.type === 'diff')) && <PullRequestPanel d={d} onDone={load} />}
 
         <ReviewChat d={d} onChanged={load} />
 

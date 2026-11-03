@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { ChatBody, ChooseRepoBody, EmailDraftBody, PrBody, type PrState, type EmailAttachments, MAX_CHAT_MESSAGES, MAX_REVISIONS, RerunBody, ReviewBody, RunWithBody, SendEmailBody, type ExecutionDetail, type ExecutionMessage, type ExecutionSummary, type ExecutionUsage, type ReviewCounts } from '@meetpilot/shared';
+import { ChatBody, ChooseRepoBody, EmailDraftBody, HandoffBody, PrBody, type PipelineStage, type PrState, type EmailAttachments, MAX_CHAT_MESSAGES, MAX_REVISIONS, RerunBody, ReviewBody, RunWithBody, SendEmailBody, type ExecutionDetail, type ExecutionMessage, type ExecutionSummary, type ExecutionUsage, type ReviewCounts } from '@meetpilot/shared';
 import { connector } from '../services/connector.js';
 import { requireUser, type AuthUser } from '../app.js';
 import { HttpError } from '../errors.js';
@@ -19,7 +19,7 @@ const toSummary = (r: any): ExecutionSummary => ({
   agent: r.agent, status: r.status, revision: r.revision, summary: r.summary, error: r.error, routeReason: r.route_reason,
   reviewer: r.reviewer_id ? { id: r.reviewer_id, username: r.reviewer_name } : null,
   assignee: r.assigned_to ? { id: r.assigned_to, username: r.assignee_name } : null, dueDate: r.due, updatedAt: r.updated_at,
-  confidence: r.confidence ?? null, routeConfidence: r.route_confidence ?? null, stagePlan: r.stage_plan ?? null, approvedChoice: r.approved_choice ?? null,
+  confidence: r.confidence ?? null, routeConfidence: r.route_confidence ?? null, stagePlan: r.stage_plan ?? null, approvedChoice: r.approved_choice ?? null, stage: r.stage ?? 0,
   repo: r.repo_id ? { id: r.repo_id, fullName: `${r.repo_owner}/${r.repo_name}` } : null,
 });
 
@@ -64,6 +64,34 @@ export async function executionRoutes(app: FastifyInstance) {
        from executions where reviewer_id = $1`, [me.id]);
     return { needsReview: rows[0].needs, working: rows[0].working };
   });
+
+  /** The agents of this task in order and where each one is. Empty for ordinary single-stage work. */
+  async function pipelineFor(e: any): Promise<PipelineStage[]> {
+    const { rows } = await app.db.query('select id, stage, agent, status, approved_choice from executions where task_id = $1 order by stage', [e.task_id]);
+    const planned: { agent: PipelineStage['agent'] }[] = Array.isArray(e.stage_plan?.stages) ? e.stage_plan.stages : [];
+    const n = Math.max(rows.length, planned.length);
+    if (n < 2) return [];
+    const out: PipelineStage[] = [];
+    let stopped = false;
+    for (let i = 0; i < n; i++) {
+      const r = rows.find((x) => x.stage === i);
+      const agent = (r?.agent ?? planned[i]?.agent) as PipelineStage['agent'];
+      let status: PipelineStage['status'] = 'planned';
+      if (r) status = r.status === 'approved' ? 'done' : ['rejected', 'failed', 'skipped_human'].includes(r.status) ? 'stopped' : r.status === 'awaiting_review' ? 'waiting' : 'active';
+      else if (stopped) status = 'stopped';
+      if (status === 'stopped') stopped = true;
+      out.push({ stage: i, agent, executionId: r?.id ?? null, status, current: r?.id === e.id, choice: r?.approved_choice ?? null });
+    }
+    return out;
+  }
+
+  /** Creates the next stage's execution: same task and reviewer, linked to the approved stage so its output becomes the next agent's brief. */
+  async function insertNextStage(q: { query: (sql: string, p?: any[]) => Promise<any> }, e: any, plan: any, agent: string, reason: string): Promise<string | null> {
+    const { rows } = await q.query(
+      `insert into executions(task_id, agent, status, reviewer_id, route_reason, route_confidence, stage_plan, stage, parent_execution_id) values ($1,$2,'routed',$3,$4,$5,$6,$7,$8)
+       on conflict (task_id, stage) do nothing returning id`, [e.task_id, agent, e.reviewer_id, reason, e.route_confidence ?? null, JSON.stringify(plan), (e.stage ?? 0) + 1, e.id]);
+    return rows[0]?.id ?? null;
+  }
 
   /** The verified file contents a pull request commits stay on the server; the browser only needs the diff. */
   const forBrowser = (a: any) => (a.type === 'diff' && a.payload?.commit_files ? { ...a, payload: (({ commit_files: _drop, ...rest }) => rest)(a.payload) } : a);
@@ -112,7 +140,7 @@ export async function executionRoutes(app: FastifyInstance) {
       };
     }
     return {
-      ...toSummary(e), send, pr: await prStateFor(e, arts.rows), task: toTask(task.rows[0]), notes: e.notes, openQuestions: Array.isArray(e.open_questions) ? e.open_questions : [], usage: toUsage(e.usage),
+      ...toSummary(e), send, pr: await prStateFor(e, arts.rows), pipeline: await pipelineFor(e), task: toTask(task.rows[0]), notes: e.notes, openQuestions: Array.isArray(e.open_questions) ? e.open_questions : [], usage: toUsage(e.usage),
       steps: steps.rows.map((r) => ({ seq: r.seq, revision: r.revision, kind: r.kind, label: r.label, detail: r.detail ?? {}, status: r.status, startedAt: r.started_at, endedAt: r.ended_at })),
       artifacts: arts.rows.map(forBrowser), canReview: e.reviewer_id === me.id && e.status === 'awaiting_review',
       consultations: cons.rows.map((c) => ({ id: c.id, fromAgent: c.from_agent, toAgent: c.to_agent, question: c.question, answer: c.answer, depth: c.depth })),
@@ -130,7 +158,7 @@ export async function executionRoutes(app: FastifyInstance) {
     await load(rows[0].execution_id, me); // same visibility as the review itself: reviewer, assignee or meeting owner
     return reply.header('content-type', rows[0].mime).header('x-content-type-options', 'nosniff').header('cache-control', 'private, max-age=0')
       .header('content-security-policy', "default-src 'none'; sandbox")
-      .header('content-disposition', `inline; filename="${String(rows[0].filename).replace(/["\r\n]/g, '_')}"`).send(rows[0].data);
+      .header('content-disposition', `${rows[0].mime === 'application/pdf' ? 'inline' : 'attachment'}; filename="${String(rows[0].filename).replace(/["\r\n]/g, '_')}"`).send(rows[0].data);
   });
 
   /** Reviewer overrides "left for a human": run a specialist anyway. */
@@ -154,6 +182,34 @@ export async function executionRoutes(app: FastifyInstance) {
     if (!rows[0]) throw new HttpError(404, 'not_found', 'that repository is not linked to this project');
     await app.agents.chooseRepo(e.id, repoId);
     return reply.status(202).send({ ok: true });
+  });
+
+  /** A web-page design that was planned as design-only can still be built: the reviewer starts the Code stage with the approved direction. Never offered for cards, banners and other designs. */
+  app.post<{ Params: { id: string } }>('/executions/:id/handoff', async (req, reply) => {
+    const me = await requireUser(app, req);
+    HandoffBody.parse(req.body);
+    const e = await load(req.params.id, me);
+    if (e.reviewer_id !== me.id) throw new HttpError(403, 'forbidden', 'only the reviewer can start the next stage');
+    const plan = e.stage_plan;
+    if (e.agent !== 'designer' || e.status !== 'approved' || !plan?.webPage) throw new HttpError(409, 'not_buildable', 'only an approved web-page design can be built with the Code agent');
+    const { rows: existing } = await app.db.query('select 1 from executions where task_id = $1 and stage = $2', [e.task_id, (e.stage ?? 0) + 1]);
+    if (existing[0]) throw new HttpError(409, 'already_started', 'the Code stage was already started');
+    const merged = { ...plan, stages: [...(plan.stages ?? [{ agent: 'designer', goal: e.task_title }]), { agent: 'code', goal: `Implement the approved design: ${e.task_title}`.slice(0, 200) }], scope: 'build' };
+    const c = await app.db.connect();
+    let id: string | null = null;
+    try {
+      await c.query('begin');
+      id = await insertNextStage(c, e, merged, 'code', 'Started by you after approving the design');
+      if (id) {
+        await c.query("update executions set stage_plan = $2 where id = $1", [e.id, JSON.stringify(merged)]);
+        await c.query("update tasks set status = 'in_progress' where id = $1", [e.task_id]);
+      }
+      await c.query('commit');
+    } catch (err) { await c.query('rollback'); throw err; } finally { c.release(); }
+    if (!id) throw new HttpError(409, 'already_started', 'the Code stage was already started');
+    await app.agents.retry(id);
+    emitUpdate({ ...e, id }, 'routed');
+    return reply.status(202).send({ executionId: id });
   });
 
   /** Opens a pull request from an approved, verified code change. A deliberate, confirmed click: never automatic, never to the default branch, never merged. */
@@ -220,6 +276,7 @@ export async function executionRoutes(app: FastifyInstance) {
 
   /** Records a verdict and moves the execution on: approve completes the task, reject hands it back, changes starts a new revision. */
   async function applyReview(e: any, me: AuthUser, body: { verdict: 'approve' | 'changes' | 'reject'; comment?: string; lineComments?: unknown[]; choice?: 'A' | 'B' }) {
+    let handoff: string | null = null;
     const c = await app.db.connect();
     try {
       await c.query('begin');
@@ -227,7 +284,12 @@ export async function executionRoutes(app: FastifyInstance) {
         [e.id, e.revision, me.id, body.verdict, body.comment ?? null, body.lineComments ? JSON.stringify(body.lineComments) : null]);
       if (body.verdict === 'approve') {
         await c.query("update executions set status = 'approved', approved_choice = $2, updated_at = now() where id = $1", [e.id, body.choice ?? null]);
-        await c.query("update tasks set status = 'done' where id = $1", [e.task_id]);
+        // A Designer→Code plan (web pages only): approving the design starts the Code stage with the approved direction; the task is done only after the last stage.
+        const plan = e.stage_plan, next = plan?.stages?.[(e.stage ?? 0) + 1];
+        if (next && e.agent === 'designer' && next.agent === 'code' && plan.scope === 'build') {
+          handoff = await insertNextStage(c, e, plan, 'code', 'Started automatically after you approved the design');
+        }
+        await c.query("update tasks set status = $2 where id = $1", [e.task_id, handoff ? 'in_progress' : 'done']);
         // Only approved files can be attached to an email or shared on (docs/09 §1.8).
         await c.query(`update execution_artifacts set payload = payload || '{"attachable": true}'::jsonb where execution_id = $1 and revision = $2 and type in ('pdf', 'file')`, [e.id, e.revision]);
       } else if (body.verdict === 'reject') {
@@ -246,6 +308,7 @@ export async function executionRoutes(app: FastifyInstance) {
     }
     app.analytics.track('execution_review', { verdict: body.verdict }, { userId: me.id, projectId: e.project_id, meetingId: e.meeting_id });
     if (body.verdict === 'changes') await app.agents.retry(e.id);
+    if (handoff) { await app.agents.retry(handoff); emitUpdate({ ...e, id: handoff }, 'routed'); }
     emitUpdate(e, body.verdict === 'approve' ? 'approved' : body.verdict === 'reject' ? 'rejected' : 'changes_requested');
   }
 

@@ -49,7 +49,7 @@ export class AgentService {
       const reviewer = t.assigned_to ?? t.owner_id; // no assignee => the meeting owner reviews (PRD §8)
       const { rows } = await this.db.query(
         `insert into executions(task_id, agent, status, reviewer_id, route_reason, route_confidence, stage_plan) values ($1,$2,$3,$4,$5,$6,$7)
-         on conflict (task_id) do nothing returning id`,
+         on conflict (task_id, stage) do nothing returning id`,
         [t.id, plan.agent, plan.agent ? 'routed' : 'skipped_human', reviewer, plan.reason, plan.confidence, plan.stagePlan ? JSON.stringify(plan.stagePlan) : null]);
       if (rows[0]) this.app.analytics.track('execution_routed', { category: plan.category, agent: plan.agent ?? 'none' }, { meetingId });
       if (rows[0] && plan.agent) await enqueue(this.db, 'agent.run', { executionId: rows[0].id });

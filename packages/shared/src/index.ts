@@ -194,9 +194,13 @@ export interface ExecutionSummary {
   /** Planned agents for this task, e.g. designer → code (web pages only), and the agent suggested when the router was unsure. */
   stagePlan: { stages?: { agent: AgentName; goal: string }[]; scope?: 'deliverable' | 'build'; suggestedAgent?: AgentName | null; missingInputs?: string[];
     /** Code work: several linked repositories fit and the reviewer must choose one. */
+    /** The task is about a web page: the approved design may be built by the Code agent (automatically in a Designer→Code plan, or by a button). */
+    webPage?: boolean;
     repoChoice?: { reason: string; candidates: { repo_id: string; full_name: string; score: number; reason: string }[] } } | null;
   /** Code work: the linked repository this execution targets. */
   repo: { id: string; fullName: string } | null;
+  /** Which stage of a multi-stage task this is (0 = first). */
+  stage: number;
 }
 export type StepKind = 'plan' | 'search' | 'read' | 'consult' | 'tool' | 'draft' | 'check';
 export interface ExecutionStep { seq: number; revision: number; kind: StepKind; label: string; detail: Record<string, unknown>; status: 'running' | 'done' | 'failed'; startedAt: string; endedAt: string | null }
@@ -213,6 +217,8 @@ export interface ExecutionDetail extends ExecutionSummary {
   openQuestions: string[]; usage: ExecutionUsage | null; steps: ExecutionStep[];
   /** Code work only: may the approved, verified change become a pull request, and the one that was opened. */
   pr: PrState | null;
+  /** Every stage of this task: the agents in order and where each one is. */
+  pipeline: PipelineStage[];
   /** Email-drafting runs only: whether the reviewer allowed sending via Gmail, and every send made from this run (audit). */
   send: { granted: boolean | null; account: string | null; sent: { sentAt: string; from: string | null; to: string[]; cc: string[]; subject: string; messageId: string | null; attachments: { filename: string; size: number }[] }[] } | null;
 }
@@ -367,3 +373,6 @@ export interface PrCheck { key: string; label: string; ok: boolean; detail?: str
 export interface PullRequestInfo { number: number | null; url: string | null; branch: string; baseBranch: string; draft: boolean; status: 'pending' | 'open' | 'unconfirmed'; createdAt: string }
 /** Whether this approved code change may become a pull request, with the reason for every check. */
 export interface PrState { allowed: boolean; checks: PrCheck[]; pullRequest: PullRequestInfo | null; defaultTitle: string; defaultBody: string; branch: string; baseBranch: string | null; repo: string | null; files: { path: string; status: string; additions: number; deletions: number }[] }
+
+export interface PipelineStage { stage: number; agent: AgentName; executionId: string | null; status: 'done' | 'active' | 'waiting' | 'planned' | 'stopped'; current: boolean; choice: 'A' | 'B' | null }
+export const HandoffBody = z.object({ agent: z.literal('code') });

@@ -1,6 +1,7 @@
 import type { ExecutionArtifact } from '@meetpilot/shared';
 import { DiffViewer, type LineComment } from './DiffViewer';
 import { EmailEditor } from './EmailEditor';
+import { FileViewer } from './FileViewer';
 import { HtmlViewer } from './HtmlViewer';
 import { ImageViewer } from './ImageViewer';
 import { MarkdownViewer } from './MarkdownViewer';
@@ -26,6 +27,8 @@ export function ArtifactView({ artifact, executionId, editable, onSaved, lineCom
     case 'verification': return <VerificationView payload={a.payload} />;
     case 'link': if (Array.isArray(a.payload?.items)) return <SourcesList payload={a.payload} />;
       return safeUrl(a.uri) ? <a href={safeUrl(a.uri)!} target="_blank" rel="noreferrer noopener">{a.title ?? a.uri}</a> : <p className="muted">{a.title}</p>;
+    case 'file': if (a.payload?.url) return <FileViewer title={a.title} payload={a.payload} />;
+      // falls through to the plain link
     default: return <p className="muted">{a.title ?? 'File'}{safeUrl(a.uri) && <> — <a href={safeUrl(a.uri)!} target="_blank" rel="noreferrer noopener">open</a></>}</p>;
   }
 }

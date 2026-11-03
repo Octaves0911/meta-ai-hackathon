@@ -6,7 +6,9 @@
   4 the diff is verified in the Modal sandbox (install with limited network, then tests with none); failures are fed back for up to two repairs
   5 deliver: plan, diff, verification evidence. A change that was not actually tested is labelled 'not tested', never 'verified'."""
 import asyncio
+import base64
 import os
+import re
 from dataclasses import asdict
 
 from agents import ArtifactOut, RunRequest, RunResponse, _State, _task_block
@@ -16,6 +18,7 @@ from patching import EditError, FileChange, build_changes
 from quality import self_check
 from repo_picker import PickRequest, RepoIn, pick_repo
 from runtrace import Trace
+import sitebundle
 from sandbox import RepoSource, SandboxError, Verification, get_backend, verify_change
 
 MAX_READ_FILES = 12
@@ -92,6 +95,65 @@ def plan_markdown(title: str, repo: RepoIn, branch: str, plan: dict, changes: li
         parts.append(f"## Rollout\n{plan['rollout']}")
     return "\n\n".join(parts)
 
+IMPLEMENT_RULES = (
+    " The task is to BUILD AN APPROVED WEB-PAGE DESIGN (shown in the brief) in this repository: use the repository's own framework, components and styling conventions, and follow the approved copy, palette, typography and layout faithfully. "
+    "Never add claims, statistics or credits that are not in the design."
+)
+
+
+async def _run_bundle(req: RunRequest, state: _State, trace: Trace, reason: str) -> RunResponse:
+    """An approved web-page design and no repository to build it in: a self-contained static site, checked by code (not run in a browser or the sandbox)."""
+    model = agent_model("code")
+    task = _task_block(req)
+    copy = sitebundle.extract_copy(req.approved_input.text if req.approved_input else "")
+    files: dict[str, str] = {}
+    out: dict = {}
+    checks: list[sitebundle.Check] = []
+    problems: list[str] = []
+    prior = ""
+    if req.feedback and req.feedback.previous_output:
+        prior = f"\n\nYour previous site (revise it according to the reviewer's feedback):\n{_fence('previous site', req.feedback.previous_output)}"
+    async with trace.step("draft", "Build the static site from the approved design", {"why_no_repo": reason[:160]}) as st:
+        for attempt in range(sitebundle.MAX_REPAIRS + 1):
+            fix = ("\n\nYour previous site failed these checks. Fix every one and return ALL files in full:\n- " + "\n- ".join(problems)) if problems else ""
+            out = await chat_json(sitebundle.BUNDLE_RULES, f"{task}{prior}{fix}", sitebundle.BUNDLE_SCHEMA, max_tokens=9000, model=model)
+            files = {str(f.get("path", "")).strip(): str(f.get("content", "")) for f in out.get("files", []) if isinstance(f, dict)}
+            checks = sitebundle.check_bundle(files, copy)
+            problems = sitebundle.problems_of(checks)
+            if not problems:
+                break
+        st["detail"].update({"attempts": attempt + 1, "files": sorted(files), "failed_checks": problems[:6]})
+    if not files or "index.html" not in files or any(c.label.startswith("Files are") and not c.ok for c in checks):
+        return await _plan_only(req, state, trace, f"No site could be built: {'; '.join(problems)[:300] or 'the model returned no files'}")
+    data = sitebundle.make_zip(files)
+    preview = sitebundle.preview_html(files)
+    ok = not problems
+    status = "not_tested"
+    reason_txt = ("Static checks passed. No browser or sandbox was used, so the page has not been opened or tested." if ok
+                  else "Static checks found problems that could not be fixed automatically: " + "; ".join(problems)[:300])
+    slug = re.sub(r"[^a-z0-9]+", "-", req.task.title.lower()).strip("-")[:40] or "site"
+    tree_md = "\n".join(f"- `{p}` ({len(files[p].encode())} bytes)" for p in sorted(files))
+    md = (f"# Static site: {req.task.title}\n\n## Summary\n{out.get('summary') or 'A static site built from the approved design.'}\n\n## Files\n{tree_md}\n\n## How to use it\n"
+          "Download the zip, unzip it and open `index.html`, or upload the folder to any static host. There is no build step.\n\n## Checks\n"
+          + "\n".join(f"- {'✓' if c.ok else '✗'} {c.label}: {c.detail}" for c in checks) + f"\n\n## Status\n{reason_txt}\n")
+    if out.get("notes"):
+        md += "\n## Notes\n" + "\n".join(f"- {n}" for n in out["notes"][:6]) + "\n"
+    async with trace.step("check", "Self-check the site against the approved design") as st:
+        check = await self_check("code", task, f"{md}\n\nindex.html:\n{files['index.html'][:6000]}", model=model,
+                                 note="This is a static site built from an approved design. Flag copy, colours, structure or claims that differ from the approved design or that are invented. "
+                                      "The checks list reports what code verified; 'not tested' is reported honestly and must not be penalised.")
+        st["detail"]["blocking"] = check.blocking
+    arts = [ArtifactOut(type="markdown", title="Static site", content=md),
+            ArtifactOut(type="html", title="Preview", payload={"html": preview, "name": "Static site preview"}),
+            ArtifactOut(type="file", title=f"Site files ({len(files)})", payload={"filename": f"{slug}-site.zip", "mime": "application/zip", "size": len(data), "kind": "site",
+                                                                              "files": [{"path": p, "size": len(files[p].encode())} for p in sorted(files)], "file_b64": base64.b64encode(data).decode("ascii")}),
+            ArtifactOut(type="verification", title="Verification: Not tested", payload={"status": status, "reason": reason_txt, "mode": "static", "repo": "", "branch": "", "ecosystem": "static site", "seconds": 0, "cost_usd": 0, "summary": "Not tested",
+                                                                                      "warnings": [], "steps": [{"label": c.label, "ok": c.ok, "output": c.detail, "command": "static check"} for c in checks]})]
+    open_q = list(check.open_questions) + [f"Confirm {b}" for b in check.blocking] + [f"Check failed: {p}" for p in problems[:3]]
+    conf = check.confidence * (0.7 if ok else 0.4) * (0.6 if check.blocking else 1.0)
+    return RunResponse(summary=(out.get("summary") or req.task.title)[:300], notes="A static site, checked by code only. Open the preview, review the files, then download the zip.", artifacts=arts,
+                       consultations=state.consultations, confidence=round(conf, 2), open_questions=list(dict.fromkeys(open_q))[:7])
+
 
 async def _plan_only(req: RunRequest, state: _State, trace: Trace, reason: str, extra_q: list[str] | None = None, repo_id: str | None = None) -> RunResponse:
     """No usable repository: the L1 plan only (steps, files likely touched, risks, tests), clearly labelled."""
@@ -135,6 +197,8 @@ async def run_code(req: RunRequest, state: _State, trace: Trace) -> RunResponse:
                                    repo_choice={"candidates": [c.model_dump() for c in pick.candidates], "reason": pick.reason})
             else:
                 reason = pick.reason
+    if repo is None and req.approved_input and req.approved_input.text.strip():
+        return await _run_bundle(req, state, trace, reason if "reason" in dir() else "No linked repository matches this task.")
     if repo is None:
         return await _plan_only(req, state, trace, reason if "reason" in dir() else "No linked repository matches this task.")
     branch = repo.default_branch or "main"
@@ -180,7 +244,7 @@ async def run_code(req: RunRequest, state: _State, trace: Trace) -> RunResponse:
     async with trace.step("draft", "Write the change and build the diff") as st:
         for attempt in range(MAX_EDIT_ATTEMPTS):
             fix = ("\n\nYour previous edits had these problems. Fix every one (copy `find` text exactly from the files above):\n- " + "\n- ".join(problems)) if problems else ""
-            plan = await chat_json(CHANGE_RULES, f"{task}{prior}\n\nRepository {repo.full_name} (branch {branch}).\n\n{render_files(originals)}{fix}", CHANGE_SCHEMA, max_tokens=4500, model=model)
+            plan = await chat_json(CHANGE_RULES + (IMPLEMENT_RULES if req.approved_input else ""), f"{task}{prior}\n\nRepository {repo.full_name} (branch {branch}).\n\n{render_files(originals)}{fix}", CHANGE_SCHEMA, max_tokens=4500, model=model)
             if not plan.get("changes"):
                 changes = []
                 break
@@ -221,7 +285,7 @@ async def run_code(req: RunRequest, state: _State, trace: Trace) -> RunResponse:
             fix = (f"\n\nYour change FAILED verification in the sandbox: {verification.reason}\nThe failing step ({failing.label if failing else '?'}) printed:\n"
                    f"{_fence('sandbox output', (failing.output if failing else '')[-3000:])}\nCorrect the change. Return the complete corrected change set, with edits relative to the ORIGINAL files shown above.")
             for _ in range(MAX_EDIT_ATTEMPTS):
-                plan2 = await chat_json(CHANGE_RULES, f"{task}\n\nRepository {repo.full_name} (branch {branch}).\n\n{render_files(originals)}{fix}", CHANGE_SCHEMA, max_tokens=4500, model=model)
+                plan2 = await chat_json(CHANGE_RULES + (IMPLEMENT_RULES if req.approved_input else ""), f"{task}\n\nRepository {repo.full_name} (branch {branch}).\n\n{render_files(originals)}{fix}", CHANGE_SCHEMA, max_tokens=4500, model=model)
                 try:
                     changes = build_changes(originals, plan2.get("changes") or [], set(files), modes)
                     plan = plan2

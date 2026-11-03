@@ -21,6 +21,7 @@
     "smoke:agents": "node --env-file=../../.env scripts/smoke-agents.mjs",
     "smoke:pr": "node --env-file=../../.env scripts/smoke-pr.mjs",
     "smoke:code": "node --env-file=../../.env scripts/smoke-code.mjs",
+    "smoke:handoff": "node --env-file=../../.env scripts/smoke-handoff.mjs",
     "smoke:repos": "node --env-file=../../.env scripts/smoke-repos.mjs",
     "smoke:attachments": "node --env-file=../../.env scripts/smoke-attachments.mjs",
     "smoke:agent-core": "node --env-file=../../.env scripts/smoke-agent-core.mjs",

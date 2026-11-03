@@ -1,5 +1,6 @@
 """Code agent with GitHub reads, the model and the sandbox all stubbed. Nothing here executes any code.
 Run: cd apps/ai && INTERNAL_SECRET=x .venv/bin/python -m unittest -v"""
+import base64
 import os
 import unittest
 from unittest import mock
@@ -12,6 +13,8 @@ from githubread import GithubReadError
 from repo_picker import PickOut, Candidate, RepoIn
 from runtrace import Trace
 from quality import Check
+from brief import ApprovedIn
+import sitebundle
 from sandbox import SandboxError, Step, Verification
 
 SRC = "const a = 1;\nfunction add(x, y) {\n  return x - y;\n}\nmodule.exports = add;\n"
@@ -289,6 +292,81 @@ class MockModeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("diff", [a.type for a in done.artifacts])
         self.assertIn("verification", [a.type for a in one.artifacts])
         self.assertNotIn("diff", [a.type for a in none.artifacts])
+
+
+DESIGN = "# Design brief\n**Headline:** Pro for teams\n\n**Call to action:** Get Pro\n"
+SITE = {"index.html": '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Pro</title><link rel="stylesheet" href="styles.css"></head><body><h1>Pro for teams</h1><a href="#s">Get Pro</a></body></html>',
+        "styles.css": "body{margin:0;font-family:system-ui}"}
+
+
+def bundle(files, summary="Static site"):
+    return {"summary": summary, "notes": ["n"], "files": [{"path": p, "content": c} for p, c in files.items()]}
+
+
+class BundleTest(unittest.IsolatedAsyncioTestCase):
+    async def go(self, outputs, r=None):
+        outs = list(outputs)
+        self.prompts = []
+
+        async def fake_json(system, user, schema, **k):
+            self.prompts.append(user)
+            return outs.pop(0) if len(outs) > 1 else outs[0]
+
+        async def fake_check(*a, **k): return Check(confidence=0.9)
+        async def fake_draft(name, task, consulted, model, fixes=None): return "# Plan"
+
+        with mock.patch.object(C, "chat_json", fake_json), mock.patch.object(C, "self_check", fake_check), mock.patch("agents._draft_text", fake_draft):
+            return await C.run_code(r or req(repos=[], approved_input=ApprovedIn(agent="designer", title="Landing", direction="A", text=DESIGN)), _State(), Trace(max_steps=16))
+
+    async def test_no_repository_means_a_checked_static_site(self):
+        out = await self.go([bundle(SITE)])
+        self.assertEqual([a.type for a in out.artifacts], ["markdown", "html", "file", "verification"])
+        z = out.artifacts[2].payload
+        self.assertEqual((z["mime"], z["kind"]), ("application/zip", "site"))
+        self.assertTrue(base64.b64decode(z["file_b64"]).startswith(b"PK\x03\x04"))
+        self.assertEqual([f["path"] for f in z["files"]], ["index.html", "styles.css"])
+        ver = out.artifacts[3].payload
+        self.assertEqual((ver["status"], ver["mode"]), ("not_tested", "static"))      # never claims it was run
+        self.assertIn("No browser or sandbox", ver["reason"])
+        self.assertNotIn("<link", out.artifacts[1].payload["html"])
+        self.assertIn("style", out.artifacts[1].payload["html"])
+        self.assertLessEqual(out.confidence, 0.7)
+
+    async def test_failed_checks_are_repaired_then_reported(self):
+        bad = {**SITE, "index.html": SITE["index.html"].replace("Get Pro", "Buy")}
+        out = await self.go([bundle(bad), bundle(SITE)])
+        self.assertEqual(out.artifacts[3].payload["reason"].startswith("Static checks passed"), True)
+        self.assertIn("approved copy", self.prompts[1])                                  # the failure was fed back
+        out = await self.go([bundle(bad)])                                               # never fixed
+        self.assertIn("could not be fixed", out.artifacts[3].payload["reason"])
+        self.assertTrue(any("Check failed" in q for q in out.open_questions))
+        self.assertEqual(len(self.prompts), 3)                                           # first try plus two repairs
+
+    async def test_unsafe_or_missing_files_fall_back_to_a_plan(self):
+        out = await self.go([bundle({"index.html": SITE["index.html"], "../evil.html": "x"})])
+        self.assertEqual([a.type for a in out.artifacts], ["markdown"])
+        self.assertIn("Plan only", out.notes)
+        out = await self.go([bundle({})])
+        self.assertIn("Plan only", out.notes)
+
+    async def test_with_a_repository_the_design_is_built_there_not_as_a_bundle(self):
+        r = req(approved_input=ApprovedIn(agent="designer", title="Landing", direction="A", text=DESIGN))
+        plans = []
+
+        async def fake_json(system, user, schema, **k):
+            plans.append(system)
+            return {"files": ["src/add.js"], "why": "w"} if schema is C.LOCATE_SCHEMA else GOOD
+
+        async def fake_tree(*a): return {"commit": COMMIT, "files": [{"path": "src/add.js", "size": 10, "mode": "100644"}], "truncated": False}
+        async def fake_file(pid, o, n, path, ref): return {"path": path, "size": len(SRC), "text": SRC}
+        async def fake_check(*a, **k): return Check(confidence=0.9)
+        async def fake_pick(preq): return PickOut(decision="pick", repo_id="r1", confidence=0.9, reason="fits", candidates=[])
+
+        with mock.patch.object(C, "pick_repo", fake_pick), mock.patch.object(C, "chat_json", fake_json), mock.patch.object(C, "read_tree", fake_tree), mock.patch.object(C, "read_file", fake_file), mock.patch.object(C, "self_check", fake_check), \
+                mock.patch.object(C, "get_backend", lambda: None), mock.patch.object(C, "clone_token", None):
+            out = await C.run_code(r, _State(), Trace(max_steps=16))
+        self.assertEqual([a.type for a in out.artifacts], ["markdown", "diff", "verification"])
+        self.assertTrue(any("APPROVED WEB-PAGE DESIGN" in s for s in plans))
 
 
 if __name__ == "__main__":
