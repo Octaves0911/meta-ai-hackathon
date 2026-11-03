@@ -1,4 +1,4 @@
-import { ArrowLeft, Bot, CheckCircle2, GitBranch, Hand, MessageCircleMore, RotateCcw, Send } from 'lucide-react';
+import { ArrowLeft, Ban, Bot, CheckCircle2, GitBranch, Hand, Maximize2, MessageCircleMore, Minimize2, RotateCcw, Send } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
 import { MAX_REVISIONS, type ExecutionDetail } from '@meetpilot/shared';
@@ -21,6 +21,7 @@ export function Review() {
   const [comment, setComment] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [full, setFull] = useState(false);
 
   const load = useCallback(() => api<ExecutionDetail>(`/executions/${id}`).then(setD).catch((e) => setError(e.message)), [id]);
   useEffect(() => { if (user) void load(); }, [user, load]);
@@ -45,11 +46,11 @@ export function Review() {
   const crumbs = <Link to="/reviews" className="row" style={{ gap: 6, color: 'var(--text-2)' }}><ArrowLeft size={16} /> Agent reviews</Link>;
   if (!d) return <AppShell active="reviews" crumbs={crumbs}>{error ? <div className="card"><EmptyState icon={Bot} title="Review not found">{error}</EmptyState></div> : <div className="stack"><Skeleton h={34} w={300} /><Skeleton h={120} /><Skeleton h={220} /></div>}</AppShell>;
 
-  const submit = async (verdict: 'approve' | 'changes') => {
+  const submit = async (verdict: 'approve' | 'changes' | 'reject') => {
     setBusy(true); setError('');
     try {
       await api(`/executions/${d.id}/review`, { method: 'POST', json: { verdict, comment: comment.trim() || undefined } });
-      toast.success(verdict === 'approve' ? 'Approved. The task is done.' : 'Sent back to the agent');
+      toast.success(verdict === 'approve' ? 'Approved. The task is done.' : verdict === 'reject' ? 'Rejected. The task is back with a person.' : 'Sent back to the agent');
       setComment(''); setTab(0); await load();
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   };
@@ -83,6 +84,7 @@ export function Review() {
 
         <StagePlan plan={d.stagePlan} />
         <RunWith d={d} onDone={load} />
+        {d.status === 'rejected' && <div className="note-inline info" role="status"><Ban size={18} /> <span><strong>Rejected.</strong> {d.reviews.filter((r) => r.verdict === 'reject').at(-1)?.comment ?? ''} The task is back with a person.</span></div>}
         {d.status === 'skipped_human' && <div className="note-inline info" role="status"><Hand size={18} /> <span><strong>Left for a human.</strong> {d.routeReason}</span></div>}
         {BUSY.has(d.status) && <div className="note-inline info" role="status"><span className="spinner" /> The {d.agent} agent is {d.status === 'changes_requested' ? 'redoing the work with your feedback' : 'working on this'}…</div>}
         {d.status === 'failed' && <div className="card" role="alert" style={{ borderColor: 'var(--danger)' }}><strong>The agent could not finish.</strong> <span className="muted">{d.error}</span><div style={{ marginTop: 10 }}><button onClick={retry}><RotateCcw size={15} /> Retry</button></div></div>}
@@ -102,11 +104,14 @@ export function Review() {
         )}
 
         {arts.length > 0 && (
-          <div className="card" style={{ padding: 0, marginBottom: 16, overflow: 'hidden' }}>
-            <div role="tablist" className="tabs">
+          <div className={`card${full ? ' viewer-full' : ''}`} style={{ padding: 0, marginBottom: 16, overflow: 'hidden' }}>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'stretch' }}>
+            <div role="tablist" className="tabs" style={{ flex: 1 }}>
               {arts.map((a, i) => <button key={a.id} role="tab" aria-selected={i === tab} className={i === tab ? 'active' : ''} onClick={() => setTab(i)}>{a.title ?? a.type}</button>)}
             </div>
-            <div style={{ padding: 20 }}>{current && <ArtifactView artifact={current} executionId={d.id} editable={d.canReview} onSaved={load} />}</div>
+            <button className="ghost icon" style={{ margin: 6 }} onClick={() => setFull(!full)} aria-label={full ? 'Exit full screen' : 'View full screen'} title={full ? 'Exit full screen' : 'Full screen'}>{full ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
+            </div>
+            <div style={{ padding: 20, ...(full ? { overflow: 'auto', flex: 1 } : {}) }}>{current && <ArtifactView artifact={current} executionId={d.id} editable={d.canReview} onSaved={load} />}</div>
           </div>
         )}
 
@@ -118,8 +123,8 @@ export function Review() {
             <div className="stack" style={{ gap: 10 }}>
               {d.reviews.map((r, i) => (
                 <div key={i} className="row" style={{ gap: 10, alignItems: 'flex-start' }}>
-                  <span className="avatar sm" style={{ background: r.verdict === 'approve' ? 'var(--success)' : 'var(--warn)' }}>{r.verdict === 'approve' ? <CheckCircle2 size={14} /> : <MessageCircleMore size={14} />}</span>
-                  <div><strong>{r.verdict === 'approve' ? 'Approved' : 'Changes requested'}</strong> <span className="faint">by {r.reviewer ?? 'someone'} · revision {r.revision}</span>{r.comment && <div className="muted">“{r.comment}”</div>}</div>
+                  <span className="avatar sm" style={{ background: r.verdict === 'approve' ? 'var(--success)' : r.verdict === 'reject' ? 'var(--danger)' : 'var(--warn)' }}>{r.verdict === 'approve' ? <CheckCircle2 size={14} /> : r.verdict === 'reject' ? <Ban size={14} /> : <MessageCircleMore size={14} />}</span>
+                  <div><strong>{r.verdict === 'approve' ? 'Approved' : r.verdict === 'reject' ? 'Rejected' : 'Changes requested'}</strong> <span className="faint">by {r.reviewer ?? 'someone'} · revision {r.revision}</span>{r.comment && <div className="muted">“{r.comment}”</div>}</div>
                 </div>
               ))}
             </div>
@@ -129,10 +134,11 @@ export function Review() {
 
       {d.canReview && (
         <div className="review-bar" role="region" aria-label="Review">
-          <textarea rows={2} value={comment} onChange={(e) => setComment(e.target.value)} placeholder="What should change? (required to request changes)" aria-label="Review comment" />
+          <textarea rows={2} value={comment} onChange={(e) => setComment(e.target.value)} placeholder="What should change? (required to request changes or reject)" aria-label="Review comment" />
           <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap' }}>
             <span className="faint" style={{ fontSize: 13 }}>{revisionsLeft > 0 ? `${revisionsLeft} revision${revisionsLeft > 1 ? 's' : ''} left` : 'No revisions left — approve or handle this yourself.'}</span>
             <div className="row">
+              <button disabled={busy || !comment.trim()} onClick={() => submit('reject')} title="Stop this work and hand the task back to a person. Add the reason above."><Ban size={15} /> Reject</button>
               <button disabled={busy || !comment.trim() || revisionsLeft <= 0} onClick={() => submit('changes')}><RotateCcw size={15} /> Request changes</button>
               <button className="primary" disabled={busy} onClick={() => submit('approve')}><Send size={15} /> Approve</button>
             </div>

@@ -3,6 +3,7 @@ import { Bot, ChevronsUpDown, FolderOpen, Gauge, Video, LogOut, Moon, PanelLeftC
 import { useState, type ReactNode } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import type { Project } from '@meetpilot/shared';
+import { useReviewCounts } from '../hooks/useReviewCounts';
 import { storeUser, useSession } from '../lib/api';
 import { Avatar, Logo, useTheme } from '../ui';
 import { NotificationBell } from './NotificationBell';
@@ -32,6 +33,7 @@ export function AppShell({ active, crumbs, actions, projects, projectId, onProje
   const { resolved, setMode } = useTheme();
   const nav = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
+  const counts = useReviewCounts(user?.username);
   const signOut = () => { storeUser(null); setUser(null); nav('/'); };
 
   return (
@@ -56,7 +58,7 @@ export function AppShell({ active, crumbs, actions, projects, projectId, onProje
 
         <nav className="nav" aria-label="Main">
           {NAV.map(({ key, to, label, icon: Icon }) => (
-            <NavLink key={key} to={to} className={`nav-item${active === key ? ' active' : ''}`} title={label}><Icon size={18} /><span>{label}</span></NavLink>
+            <NavLink key={key} to={to} className={`nav-item${active === key ? ' active' : ''}`} title={label}><Icon size={18} /><span>{label}</span>{key === 'reviews' && counts.needsReview > 0 && <span className="badge-count count" aria-label={`${counts.needsReview} waiting for your review`}>{counts.needsReview}</span>}</NavLink>
           ))}
         </nav>
         <div className="spacer" />

@@ -203,3 +203,7 @@
 @media (max-width: 640px) { .btn-label { display: none; } .topbar { padding: 10px 14px; } .page { padding: 16px; } .meeting-row { grid-template-columns: minmax(0, 1fr) auto; } .meeting-row > svg { display: none; } .stat-card .stat { font-size: 24px; } }
 
 .btn-lg { min-height: 48px; padding: 0 22px; font-size: 15.5px; border-radius: 12px; }
+
+/* In-site full screen for a deliverable (Review page) */
+.viewer-full { position: fixed; inset: 12px; z-index: 60; display: flex; flex-direction: column; background: var(--surface); box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+.viewer-full .frame { height: calc(100vh - 160px) !important; }

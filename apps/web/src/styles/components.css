@@ -75,7 +75,7 @@ hr, .divider { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .status-done, .status-approved { background: var(--success-soft); color: var(--success-text); }
 .status-in_progress, .status-review, .status-running, .status-routed, .status-changes_requested { background: var(--accent-soft); color: var(--accent-text); }
 .status-awaiting_review { background: var(--warn-soft); color: var(--warn-text); }
-.status-failed { background: var(--danger-soft); color: var(--danger-text); }
+.status-failed, .status-rejected { background: var(--danger-soft); color: var(--danger-text); }
 .status-skipped_human { background: var(--surface-3); color: var(--text-2); }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 10px 12px; border-bottom: 1px solid var(--border); }
 .chip { min-height: 28px; padding: 0 11px; font-size: 13px; border-radius: 999px; box-shadow: none; background: transparent; border-color: var(--border); color: var(--text-2); }
