@@ -79,7 +79,7 @@ Today agents return Markdown, links, an email draft and one tiny SVG; the `pdf` 
 
 Presentation/Word/spreadsheet tasks in the first pass produce a PDF version (for a deck: one slide per page, landscape) and say so in *Needs your input* ("editable PPTX not generated yet").
 
-- One module `apps/ai/files/` with `build_pdf|docx|pptx|xlsx(spec) -> bytes`, golden-file tests (opens with the reader library, page/slide counts, no empty sections).
+- One module `apps/ai/files/` with `build_pdf(spec) -> bytes` (docx/pptx/xlsx builders later), golden-file tests (opens with the reader library, page/slide counts, no empty sections).
 - **Storage**: bytes go to the existing artifact storage; the artifact is `type: "file"` with `payload {storage_key, filename, mime, size, sha256, attachable, pages|slides}`. Served with `Content-Disposition` + `nosniff` (existing upload rules). Previews: PDF inline, PPTX/DOCX as thumbnail/outline text + download.
 - **Limits**: ≤ 10 MB per file, ≤ 8 files per execution (email: ≤ 10 MB total, §2.2); filenames sanitised (`[A-Za-z0-9._ -]`, no path parts).
 - **Honesty**: any figure in a file is sourced or labelled "assumption" (same rules as the text deliverable); the quality gate checks the spec before the file is built.
@@ -116,7 +116,7 @@ Order: **Research → Communication → Marketing → Designer → Code** (Resea
 - **Handles**: email, reply, announcement, follow-up, newsletter, message.
 - **Tools**: `find_thread` (reviewer's Gmail), `project_memory_search`; consult Research for missing facts.
 - **Pipeline**: intent + audience → find existing thread (reply vs new) → gather facts from the brief (dates/decisions/owners) → draft → **fact check** (every date, number and name in the body must appear in the brief) → recipients (existing rule: only addresses from sources or the task; else `missing_recipients`).
-- **Deliverables**: `email_draft` (to, cc, subject, body, open_questions, sources, thread ids, **attachments[]**). Send stays explicit (confirmation dialog, dedupe, ≤10 recipients; existing). Writes its own file only when the task is a letter/notice (`letter.pdf` / `.docx`).
+- **Deliverables**: `email_draft` (to, cc, subject, body, open_questions, sources, thread ids, **attachments[]**). Send stays explicit (confirmation dialog, dedupe, ≤10 recipients; existing). Writes its own file only when the task is a letter/notice (`letter.pdf`).
 - **Attachments** (new):
   - The agent scans the project for **approved** file artifacts relevant to the task (other tasks from the same meeting, prior approved work) and proposes them as chips on the draft; it never attaches anything on its own.
   - The reviewer ticks each file; the send dialog lists every attachment (name, size, type) next to recipients and body.
