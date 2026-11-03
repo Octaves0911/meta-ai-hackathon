@@ -70,6 +70,7 @@ class BriefIn(BaseModel):
     neighbours: list[NeighbourIn] = Field(default_factory=list, max_length=12)
     prior_work: list[PriorWork] = Field(default_factory=list, max_length=4)
     files: list[FileIn] = Field(default_factory=list, max_length=12)  # deliverables of other work that an email could attach
+    brand_note: str | None = Field(default=None, max_length=1500)  # owner-written brand & voice note (Marketing, Communication, Designer)
     allow_web: bool = True  # false when the project forbids external lookups (docs/09 §2.1)
 
 
@@ -144,6 +145,8 @@ def render_brief(b: BriefIn) -> str:
     if b.files:
         rows = [f"- id {f.id}: {sanitize_label(f.title, 120)} ({f.agent}, {f.state or 'unknown state'})" for f in b.files]
         parts.append("Files from other work that an email could attach (refer to them ONLY by these ids; a file that is not ready yet can still be chosen, the reviewer will see its progress):\n" + "\n".join(_fit(rows, 1200)))
+    if b.brand_note and b.brand_note.strip():
+        parts.append("Brand and voice, written by the project owner (follow it for tone, wording and positioning):\n<untrusted_source label=\"brand note\">" + _clean(b.brand_note.strip()) + "</untrusted_source>")
     parts.append("Project context:\n" + render_context(b.context))
     return "\n\n".join(parts)
 

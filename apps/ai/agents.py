@@ -20,7 +20,7 @@ from quality import Check, self_check, unsupported_facts
 from runtrace import LimitExceeded, Trace
 
 AgentName = Literal["research", "marketing", "designer", "communication", "code"]
-ArtifactType = Literal["markdown", "image", "pdf", "video", "diff", "link", "file", "email_draft"]
+ArtifactType = Literal["markdown", "image", "pdf", "video", "diff", "link", "file", "email_draft", "html", "table"]
 
 MAX_DEPTH = 2          # consultation depth (PRD F8.3)
 MAX_CONSULTATIONS = 4  # per task
@@ -185,6 +185,8 @@ def _mock_run(name: str, req: RunRequest, state: _State) -> RunResponse:
                            artifacts=arts, consultations=state.consultations)
     md = f"# {name.title()} deliverable: {t.title}{rev}\n\n## Summary\nMock {name} output for the task above.{addressed}{consult_md}\n\n## Sources\n{sources}\n"
     arts = [ArtifactOut(type="markdown", title=f"{name.title()} report" if name != "code" else "Implementation plan", content=md)]
+    if name == "marketing":
+        arts.append(ArtifactOut(type="table", title="Timeline", payload={"columns": ["Phase", "Start", "End", "Owner", "Deliverable"], "rows": [["Teaser", "Nov 8, 2026", "Nov 15, 2026", "Unassigned", "Mock teaser"], ["Launch", "Nov 22, 2026", "Nov 22, 2026", "Unassigned", "Mock launch"]]}))
     if name == "research":
         arts.append(ArtifactOut(type="link", title="Sources (1)", payload={"items": [{"title": "Example pricing page", "url": "https://example.com/pricing", "host": "example.com"}], "searched_on": "mock"}))
     if name == "designer":
@@ -283,6 +285,10 @@ async def _real_run(name: str, req: RunRequest, state: _State, trace: Trace) -> 
         from research import run_research  # lazy: research imports this module
 
         return await run_research(req, state, trace)
+    if name == "marketing":
+        from marketing import run_marketing
+
+        return await run_marketing(req, state, trace)
     model = agent_model(name)
     task = _task_block(req)
     async with trace.step("read", "Read the brief", {"lines": len(req.source_lines), "decisions": len(req.decisions), "neighbours": len(req.neighbours),
@@ -382,8 +388,9 @@ def attach_pdfs(out: RunResponse, name: str, req: RunRequest) -> None:
         if len(data) > MAX_FILE_BYTES:
             out.notes = (out.notes + " " if out.notes else "") + "PDF was too large to attach."
             continue
-        fname = f"{_slug(req.task.title)}{'-slides' if wants_deck else ''}.pdf"
-        out.artifacts.append(ArtifactOut(type="pdf", title=f"{'Slides' if wants_deck else 'Report'} (PDF)", payload={
+        many = sum(1 for a in out.artifacts if a.type == "markdown") > 1
+        fname = f"{_slug(req.task.title)}{'-' + _slug(art.title or '') if many else ''}{'-slides' if wants_deck else ''}.pdf"
+        out.artifacts.append(ArtifactOut(type="pdf", title=f"{art.title} (PDF)" if many else f"{'Slides' if wants_deck else 'Report'} (PDF)", payload={
             "filename": fname, "mime": "application/pdf", "pages": pages, "size": len(data), "layout": "slides" if wants_deck else "document",
             "file_b64": base64.b64encode(data).decode("ascii")}))
         if wants_deck:
