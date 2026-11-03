@@ -80,6 +80,20 @@ ok('cannot review twice', (await api(`/executions/${research.id}/review`, 'dev',
 ok('approved draft can no longer be edited', (await api(`/executions/${comm.id}/review`, 'rita', 'POST', { verdict: 'approve' })).status === 204
   && (await api(`/executions/${comm.id}/artifacts/${draft.id}`, 'rita', 'PUT', { to: ['x@example.com'], cc: [], subject: 's', body: 'b' })).status === 409);
 
+// generated files: stored, served to the right people, attachable only once approved
+const rawGet = (path, user) => fetch(B + '/api' + path, { headers: user ? { 'x-user': user } : {} });
+const dApproved = (await api(`/executions/${research.id}`, 'dev')).body;
+const pdfArt = dApproved.artifacts.find((x) => x.type === 'pdf');
+ok('markdown deliverable also has a PDF artifact with metadata and no raw bytes', !!pdfArt && pdfArt.payload.url === `/artifacts/${pdfArt.id}/file` && pdfArt.payload.size > 500 && pdfArt.payload.pages >= 1 && /\.pdf$/.test(pdfArt.payload.filename) && !('file_b64' in pdfArt.payload), pdfArt);
+const fileRes = await rawGet(pdfArt.payload.url, 'dev');
+const bytes = Buffer.from(await fileRes.arrayBuffer());
+ok('reviewer downloads the real PDF with safe headers', fileRes.status === 200 && fileRes.headers.get('content-type') === 'application/pdf' && fileRes.headers.get('x-content-type-options') === 'nosniff' && /sandbox/.test(fileRes.headers.get('content-security-policy') ?? '') && bytes.subarray(0, 5).toString() === '%PDF-' && bytes.length === pdfArt.payload.size, { status: fileRes.status, len: bytes.length });
+ok('meeting owner can open it; strangers and anonymous cannot', (await rawGet(pdfArt.payload.url, 'rita')).status === 200 && (await rawGet(pdfArt.payload.url, 'mallory')).status === 404 && (await rawGet(pdfArt.payload.url)).status === 401);
+ok('approved file is marked attachable', pdfArt.payload.attachable === true, pdfArt.payload);
+const designPdf = dDesign.artifacts.find((x) => x.type === 'pdf');
+ok('work not yet approved is not attachable', !!designPdf && designPdf.payload.attachable === false, designPdf?.payload);
+ok('file bytes follow the artifact (one row per PDF)', (await db.query('select count(*)::int n from execution_files f join execution_artifacts a on a.id = f.artifact_id where a.execution_id = $1', [research.id])).rows[0].n >= 1);
+
 // failed run can be retried
 const t = (await db.query("insert into tasks(meeting_id, project_id, title, finalized, assigned_to) values ($1,$2,'Research the market', true, $3) returning id", [M, P.id, id('dev')])).rows[0].id;
 const ex = (await db.query("insert into executions(task_id, agent, status, reviewer_id, error) values ($1,'research','failed',$2,'boom') returning id", [t, id('dev')])).rows[0].id;
