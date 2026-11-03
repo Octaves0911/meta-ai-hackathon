@@ -11,8 +11,11 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+import base64
+
 from brief import BriefIn, CtxItem, TaskIn, brief_text_for_facts, render_brief, render_context  # noqa: F401  (TaskIn/CtxItem re-exported)
 from llm import agent_model, begin_usage, complete_json, complete_text, sanitize_label
+from files import build_pdf, markdown_to_spec
 from quality import Check, self_check, unsupported_facts
 from runtrace import LimitExceeded, Trace
 
@@ -313,6 +316,38 @@ async def _real_run(name: str, req: RunRequest, state: _State, trace: Trace) -> 
                        confidence=round(check.confidence * (0.6 if check.blocking else 1.0), 2), open_questions=open_q)
 
 
+MAX_FILE_BYTES = 10 * 1024 * 1024  # per file (docs/09 §1.8)
+DECK_WORDS = re.compile(r"\b(deck|slides?|presentation|pitch|keynote|powerpoint|pptx)\b", re.I)
+
+
+def _slug(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-").lower()[:50] or "document"
+
+
+def attach_pdfs(out: RunResponse, name: str, req: RunRequest) -> None:
+    """Every Markdown deliverable also gets a real PDF: what the reviewer reads is what they can download and attach.
+    Deck/presentation tasks get a landscape, one-slide-per-page PDF. A failure here never fails the run."""
+    wants_deck = bool(DECK_WORDS.search(f"{req.task.title} {req.task.description or ''}"))
+    for art in list(out.artifacts):
+        if art.type != "markdown" or not art.content:
+            continue
+        try:
+            spec = markdown_to_spec(art.content, title=req.task.title, layout="slides" if wants_deck else "document")
+            data, pages = build_pdf(spec)
+        except Exception as e:  # noqa: BLE001 - the Markdown deliverable is still delivered
+            out.notes = (out.notes + " " if out.notes else "") + f"PDF could not be generated ({type(e).__name__})."
+            continue
+        if len(data) > MAX_FILE_BYTES:
+            out.notes = (out.notes + " " if out.notes else "") + "PDF was too large to attach."
+            continue
+        fname = f"{_slug(req.task.title)}{'-slides' if wants_deck else ''}.pdf"
+        out.artifacts.append(ArtifactOut(type="pdf", title=f"{'Slides' if wants_deck else 'Report'} (PDF)", payload={
+            "filename": fname, "mime": "application/pdf", "pages": pages, "size": len(data), "layout": "slides" if wants_deck else "document",
+            "file_b64": base64.b64encode(data).decode("ascii")}))
+        if wants_deck:
+            out.notes = (out.notes + " " if out.notes else "") + "Editable PPTX is not generated yet; this PDF has one slide per page."
+
+
 async def _run(name: str, req: RunRequest) -> RunResponse:
     state = _State()
     usage = begin_usage()
@@ -324,6 +359,8 @@ async def _run(name: str, req: RunRequest) -> RunResponse:
         out.open_questions = out.open_questions or (["Who should receive this email?"] if name == "communication" and out.artifacts[0].payload and not out.artifacts[0].payload.get("to") else [])
     else:
         out = await asyncio.wait_for(_real_run(name, req, state, trace), timeout=WALL_CLOCK_SECONDS)
+    if out.artifacts:
+        attach_pdfs(out, name, req)
     out.usage, out.steps = usage, trace.steps
     return out
 
