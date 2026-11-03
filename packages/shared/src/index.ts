@@ -211,6 +211,8 @@ export interface ExecutionDetail extends ExecutionSummary {
   task: Task; notes: string | null; artifacts: ExecutionArtifact[]; consultations: Consultation[]; reviews: ExecutionReview[]; canReview: boolean;
   /** Things the agent could not settle and a human must supply or confirm (shown first on a review). */
   openQuestions: string[]; usage: ExecutionUsage | null; steps: ExecutionStep[];
+  /** Code work only: may the approved, verified change become a pull request, and the one that was opened. */
+  pr: PrState | null;
   /** Email-drafting runs only: whether the reviewer allowed sending via Gmail, and every send made from this run (audit). */
   send: { granted: boolean | null; account: string | null; sent: { sentAt: string; from: string | null; to: string[]; cc: string[]; subject: string; messageId: string | null; attachments: { filename: string; size: number }[] }[] } | null;
 }
@@ -353,3 +355,15 @@ export function parseDiff(text: string): PatchFile[] {
   }
   return files;
 }
+
+// ---- pull requests from verified code changes
+export const PrBody = z.object({
+  confirm: z.literal(true, { error: 'opening a pull request needs explicit confirmation' }),
+  draft: z.boolean().default(true),
+  title: z.string().trim().min(1).max(200).refine((t) => !/[\r\n]/.test(t), 'the title must be one line').optional(),
+  body: z.string().max(20_000).optional(),
+});
+export interface PrCheck { key: string; label: string; ok: boolean; detail?: string }
+export interface PullRequestInfo { number: number | null; url: string | null; branch: string; baseBranch: string; draft: boolean; status: 'pending' | 'open' | 'unconfirmed'; createdAt: string }
+/** Whether this approved code change may become a pull request, with the reason for every check. */
+export interface PrState { allowed: boolean; checks: PrCheck[]; pullRequest: PullRequestInfo | null; defaultTitle: string; defaultBody: string; branch: string; baseBranch: string | null; repo: string | null; files: { path: string; status: string; additions: number; deletions: number }[] }

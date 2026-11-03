@@ -145,16 +145,18 @@ async def run_code(req: RunRequest, state: _State, trace: Trace) -> RunResponse:
     try:
         async with trace.step("read", f"List the files of {repo.full_name}") as st:
             tree = await read_tree(pid, owner, name, branch)
+            commit = str(tree.get("commit") or "")          # everything below is pinned to this exact commit
             files = [f["path"] for f in tree["files"]]
+            modes = {f["path"]: f.get("mode", "100644") for f in tree["files"]}
             sizes = {f["path"]: int(f.get("size", 0)) for f in tree["files"]}
-            st["detail"].update({"files": len(files), "truncated": tree.get("truncated", False)})
+            st["detail"].update({"files": len(files), "truncated": tree.get("truncated", False), "commit": commit[:10]})
         listing = "\n".join(f"{p} ({sizes[p]} bytes)" for p in sorted(files, key=lambda p: (p.count("/"), p))[:MAX_TREE_LISTED])
         async with trace.step("plan", "Decide which files to read") as st:
             loc = await chat_json(LOCATE_RULES, f"{task}\n\nRepository {repo.full_name}:\n{_fence('index', repo.index_text)}\n\nFiles:\n{listing}", LOCATE_SCHEMA, max_tokens=500, model=model)
             wanted = [p for p in dict.fromkeys(str(x) for x in loc.get("files", [])) if p in sizes and sizes[p] <= MAX_FILE_CHARS * 2][:MAX_READ_FILES]
             st["detail"]["files"] = wanted
         async with trace.step("read", "Read the files") as st:
-            got = await asyncio.gather(*(read_file(pid, owner, name, p, branch) for p in wanted), return_exceptions=True)
+            got = await asyncio.gather(*(read_file(pid, owner, name, p, commit or branch) for p in wanted), return_exceptions=True)
             originals: dict[str, str] = {}
             total = 0
             for p, g in zip(wanted, got):
@@ -183,7 +185,7 @@ async def run_code(req: RunRequest, state: _State, trace: Trace) -> RunResponse:
                 changes = []
                 break
             try:
-                changes = build_changes(originals, plan["changes"], set(files))
+                changes = build_changes(originals, plan["changes"], set(files), modes)
                 problems = []
                 break
             except EditError as e:
@@ -208,7 +210,7 @@ async def run_code(req: RunRequest, state: _State, trace: Trace) -> RunResponse:
                     token = await clone_token(pid) if pid else None
                 except GithubReadError:
                     token = None
-                verification = await verify_change(backend, RepoSource(clone_url=f"https://github.com/{repo.full_name}.git", ref=branch, token=token), patch, patch_ref=f"`{branch}`")
+                verification = await verify_change(backend, RepoSource(clone_url=f"https://github.com/{repo.full_name}.git", ref=branch, commit=commit or None, token=token), patch, patch_ref=f"`{branch}`")
                 add_cost(verification.cost_usd, "sandbox_cost_usd")
                 st["detail"].update({"status": verification.status, "reason": verification.reason[:200], "seconds": verification.seconds})
         attempts = attempt + 1
@@ -221,7 +223,7 @@ async def run_code(req: RunRequest, state: _State, trace: Trace) -> RunResponse:
             for _ in range(MAX_EDIT_ATTEMPTS):
                 plan2 = await chat_json(CHANGE_RULES, f"{task}\n\nRepository {repo.full_name} (branch {branch}).\n\n{render_files(originals)}{fix}", CHANGE_SCHEMA, max_tokens=4500, model=model)
                 try:
-                    changes = build_changes(originals, plan2.get("changes") or [], set(files))
+                    changes = build_changes(originals, plan2.get("changes") or [], set(files), modes)
                     plan = plan2
                     break
                 except EditError as e:
@@ -239,7 +241,9 @@ async def run_code(req: RunRequest, state: _State, trace: Trace) -> RunResponse:
                                       "Flag: changes unrelated to the task, invented APIs, missing tests, ignored decisions.")
         st["detail"]["blocking"] = check.blocking
     arts = [ArtifactOut(type="markdown", title="Implementation plan", content=md),
-            ArtifactOut(type="diff", title=f"Change to {repo.full_name}", payload={"diff": patch, "repo": repo.full_name, "branch": branch,
+            ArtifactOut(type="diff", title=f"Change to {repo.full_name}", payload={"diff": patch, "repo": repo.full_name, "branch": branch, "base_sha": commit,
+                                                                                    # what a pull request commits: the exact files that were verified (kept server-side, not shown in the browser)
+                                                                                    "commit_files": [{"path": c.path, "status": c.status, "content": c.content, "mode": c.mode} for c in changes],
                                                                                     "files": [{"path": c.path, "status": c.status, "additions": c.additions, "deletions": c.deletions} for c in changes]}),
             ArtifactOut(type="verification", title=f"Verification: {verification.summary()}", payload=verification_payload(verification, mode, repo, branch))]
     open_q = list(check.open_questions) + [f"Confirm {b}" for b in check.blocking]

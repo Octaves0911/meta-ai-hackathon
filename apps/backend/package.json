@@ -19,6 +19,7 @@
     "smoke:insights": "node --env-file=../../.env scripts/smoke-insights.mjs",
     "smoke:tasks": "node --env-file=../../.env scripts/smoke-tasks.mjs",
     "smoke:agents": "node --env-file=../../.env scripts/smoke-agents.mjs",
+    "smoke:pr": "node --env-file=../../.env scripts/smoke-pr.mjs",
     "smoke:code": "node --env-file=../../.env scripts/smoke-code.mjs",
     "smoke:repos": "node --env-file=../../.env scripts/smoke-repos.mjs",
     "smoke:attachments": "node --env-file=../../.env scripts/smoke-attachments.mjs",

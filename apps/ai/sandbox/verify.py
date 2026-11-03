@@ -19,6 +19,7 @@ GIT_ID = ["-c", "user.name=meetpilot", "-c", "user.email=meetpilot@localhost"]
 class RepoSource:
     clone_url: str | None = None     # https://github.com/owner/name.git
     ref: str | None = None           # branch or tag; default branch if None
+    commit: str | None = None        # an exact 40-character commit id: verify precisely what was read, even if the branch has moved since
     token: str | None = None         # read-only clone credential: setup phase only, passed in the environment, never written, never in evidence
     tarball: bytes | None = None     # alternative: an uploaded copy of the workspace (.tar.gz)
 
@@ -84,7 +85,16 @@ async def verify_change(backend: Backend | None, repo: RepoSource, patch: str, *
         t0 = time.monotonic()
         setup = await backend.open(spec)
         env = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.extraheader", "GIT_CONFIG_VALUE_0": f"Authorization: Basic {_basic(repo.token)}"} if repo.token else None
-        if repo.clone_url:
+        if repo.clone_url and repo.commit:
+            if not re.fullmatch(r"[0-9a-fA-F]{40}", repo.commit):
+                return end("failed", "The commit to verify is not a valid commit id.")
+            s = await run.run(setup, "setup", "init", ["git", "init", "--quiet", WORKDIR], timeout=60)
+            for label, cmd, t in (("remote", ["git", "-C", WORKDIR, "remote", "add", "origin", repo.clone_url], 60),
+                                  ("clone", ["git", "-C", WORKDIR, "fetch", "--quiet", "--depth", "1", "origin", repo.commit], INSTALL_TIMEOUT),
+                                  ("checkout", ["git", "-C", WORKDIR, "checkout", "--quiet", "FETCH_HEAD"], 120)):
+                if s.ok:
+                    s = await run.run(setup, "setup", label, cmd, timeout=t, env=env if label == "clone" else None)
+        elif repo.clone_url:
             cmd = ["git", "clone", "--quiet", "--depth", "1", *(["--branch", repo.ref] if repo.ref else []), repo.clone_url, WORKDIR]
             s = await run.run(setup, "setup", "clone", cmd, timeout=INSTALL_TIMEOUT, env=env)
         else:

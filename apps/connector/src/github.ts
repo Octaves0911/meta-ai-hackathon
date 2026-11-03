@@ -72,12 +72,14 @@ export class GithubClient {
   }
 
   /** The repository's file list at a ref (default branch if none): paths and sizes, minus secrets, vendored folders and lockfiles. */
-  async tree(owner: string, name: string, ref: string, token?: string | null): Promise<{ ref: string; truncated: boolean; files: { path: string; size: number }[] }> {
+  async tree(owner: string, name: string, ref: string, token?: string | null): Promise<{ ref: string; commit: string; truncated: boolean; files: { path: string; size: number; mode: string }[] }> {
     if (!OWNER.test(owner) || !NAME.test(name) || !/^[A-Za-z0-9._\/-]{1,200}$/.test(ref) || ref.includes('..')) throw new GithubError(400, 'invalid_repo', 'that is not a valid repository or branch');
-    const t = await this.get(`/repos/${owner}/${name}/git/trees/${encodeURIComponent(ref)}?recursive=1`, token);
+    const c = await this.get(`/repos/${owner}/${name}/commits/${encodeURIComponent(ref)}`, token);   // pin the exact commit: later reads, the sandbox clone and the PR branch all use it
+    if (!/^[0-9a-f]{40}$/i.test(String(c?.sha ?? ''))) throw new GithubError(502, 'github_error', 'GitHub returned no commit for that branch');
+    const t = await this.get(`/repos/${owner}/${name}/git/trees/${c.sha}?recursive=1`, token);
     const files = (Array.isArray(t.tree) ? t.tree : []).filter((e: any) => e.type === 'blob' && typeof e.path === 'string')
-      .filter((e: any) => safePath(e.path) && !SKIP_DIRS.test(e.path) && !LOCKFILES.test(e.path)).slice(0, MAX_TREE_FILES).map((e: any) => ({ path: String(e.path), size: Number(e.size ?? 0) }));
-    return { ref, truncated: !!t.truncated || files.length >= MAX_TREE_FILES, files };
+      .filter((e: any) => safePath(e.path) && !SKIP_DIRS.test(e.path) && !LOCKFILES.test(e.path)).slice(0, MAX_TREE_FILES).map((e: any) => ({ path: String(e.path), size: Number(e.size ?? 0), mode: String(e.mode ?? '100644') }));
+    return { ref, commit: String(c.sha).toLowerCase(), truncated: !!t.truncated || files.length >= MAX_TREE_FILES, files };
   }
 
   /** One text file at a ref. Secrets, directories, binaries and anything over 200 KB are refused. */
@@ -148,7 +150,7 @@ export function buildIndexText(meta: RepoMeta, languages: Record<string, number>
 
 /** Per-project token storage (sealed) and the calls that use it. */
 export class GithubService {
-  constructor(private db: pg.Pool, private client = new GithubClient()) {}
+  constructor(private db: pg.Pool, private client = new GithubClient(), private writer = new GithubWriter()) {}
 
   private async token(projectId: string): Promise<string | null> {
     const { rows } = await this.db.query('select token_ciphertext, token_iv, token_tag from github_connections where project_id = $1', [projectId]);
@@ -182,6 +184,86 @@ export class GithubService {
   /** Read credential for cloning in the sandbox's setup phase (docs/09 §2.5). Only ever handed to the AI service's sandbox layer, over the internal secret. */
   async cloneToken(projectId: string): Promise<string | null> { return this.token(projectId); }
 
+  /** Opens a pull request with the project's token. Needs a stored token; refuses everything the PR path refuses (protected paths, size, branch names). */
+  async createPullRequest(projectId: string, r: PrRequest): Promise<PrResult> {
+    const token = await this.token(projectId);
+    if (!token) throw new GithubError(409, 'github_not_connected', 'Connect a GitHub token with write access in project settings first');
+    return this.writer.createPullRequest(r, token);
+  }
+
   tree(projectId: string, owner: string, name: string, ref: string) { return this.token(projectId).then((t) => this.client.tree(owner, name, ref, t)); }
   file(projectId: string, owner: string, name: string, path: string, ref: string) { return this.token(projectId).then((t) => this.client.file(owner, name, path, ref, t)); }
+}
+
+// ---------------------------------------------------------------- pull requests (docs/09 §2.5, L3)
+export const MAX_PR_FILES = 8;
+export const MAX_PR_BYTES = 300_000;
+const BRANCH = /^meetpilot\/[a-z0-9][a-z0-9-]{2,60}$/;
+const SHA = /^[0-9a-f]{40}$/i;
+const PROTECTED = /(^|\/)(\.git|\.github\/workflows|node_modules)(\/|$)/i;
+const FILE_MODES = new Set(['100644', '100755']);
+
+export interface PrFile { path: string; content: string; mode?: string }
+export interface PrRequest { owner: string; name: string; baseBranch: string; baseSha: string; branch: string; title: string; body: string; files: PrFile[]; draft: boolean; message: string }
+export interface PrResult { number: number; url: string; branch: string; headSha: string }
+
+/** Everything the PR path refuses before any request is made. Returns the problem, or null. */
+export function prProblem(r: PrRequest): string | null {
+  if (!OWNER.test(r.owner) || !NAME.test(r.name)) return 'invalid repository';
+  if (!BRANCH.test(r.branch)) return 'the branch name must look like meetpilot/short-description';
+  if (!SHA.test(r.baseSha)) return 'the base commit is not a full commit id';
+  if (!/^[A-Za-z0-9._\/-]{1,200}$/.test(r.baseBranch) || r.baseBranch.includes('..')) return 'invalid base branch';
+  if (!r.title.trim() || r.title.length > 200 || /[\r\n]/.test(r.title)) return 'the title must be one line of at most 200 characters';
+  if (r.body.length > 20_000 || r.message.length > 5_000) return 'the description is too long';
+  if (!r.files.length || r.files.length > MAX_PR_FILES) return `a pull request carries between 1 and ${MAX_PR_FILES} files`;
+  let bytes = 0;
+  const seen = new Set<string>();
+  for (const f of r.files) {
+    if (!safePath(f.path) || PROTECTED.test(f.path)) return `${String(f.path).slice(0, 80)} cannot be changed by an agent`;
+    if (seen.has(f.path)) return `${f.path} appears twice`;
+    seen.add(f.path);
+    if (typeof f.content !== 'string' || f.content.includes('\0')) return `${f.path} is not text`;
+    if (f.mode && !FILE_MODES.has(f.mode)) return `${f.path} has an unsupported file mode`;
+    bytes += Buffer.byteLength(f.content);
+  }
+  return bytes > MAX_PR_BYTES ? 'the change is too large for a pull request' : null;
+}
+
+export class GithubWriter {
+  constructor(private f: Fetch = fetch) {}
+
+  private async send(method: 'GET' | 'POST', path: string, token: string, body?: unknown): Promise<any> {
+    let res: Response;
+    try {
+      res = await this.f(`${API()}${path}`, {
+        method, headers: { accept: 'application/vnd.github+json', 'user-agent': 'MeetPilot', 'x-github-api-version': '2022-11-28', authorization: `Bearer ${token}`, ...(body ? { 'content-type': 'application/json' } : {}) },
+        body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(30_000), redirect: 'manual',
+      });
+    } catch { throw new GithubError(502, 'github_unreachable', 'GitHub could not be reached'); }
+    if (res.ok) return res.json();
+    let detail = '';
+    try { const j: any = await res.json(); detail = [j?.message, ...(Array.isArray(j?.errors) ? j.errors.map((e: any) => e?.message ?? e?.code) : [])].filter(Boolean).join('; ').slice(0, 240); } catch { /* no body */ }
+    detail = detail.split(token).join('***'); // GitHub never echoes the token, but an error must not be able to carry it either
+    if (res.status === 401) throw new GithubError(401, 'bad_token', 'GitHub rejected the token');
+    if (res.status === 403 || res.status === 404) throw new GithubError(403, 'no_write_access', 'The GitHub token cannot push to this repository. It needs Contents and Pull requests write access to it.');
+    if (res.status === 422 && /reference already exists/i.test(detail)) throw new GithubError(409, 'branch_exists', 'A branch with that name already exists');
+    if (res.status === 422) throw new GithubError(422, 'github_rejected', `GitHub refused the pull request: ${detail || 'validation failed'}`);
+    if (res.status === 429) throw new GithubError(429, 'rate_limited', 'GitHub rate limit reached; try again later');
+    throw new GithubError(502, 'github_error', `GitHub answered ${res.status}${detail ? `: ${detail}` : ''}`);
+  }
+
+  /** One commit on a NEW branch cut from the exact commit that was read and verified, then a pull request into the base branch. Never touches the base branch itself, never force-pushes, never merges. */
+  async createPullRequest(r: PrRequest, token: string): Promise<PrResult> {
+    const bad = prProblem(r);
+    if (bad) throw new GithubError(400, 'invalid_request', bad);
+    const base = `/repos/${r.owner}/${r.name}`;
+    const parent = await this.send('GET', `${base}/git/commits/${r.baseSha}`, token);
+    const blobs = [];
+    for (const f of r.files) blobs.push({ path: f.path, sha: (await this.send('POST', `${base}/git/blobs`, token, { content: f.content, encoding: 'utf-8' })).sha, mode: f.mode ?? '100644' });
+    const tree = await this.send('POST', `${base}/git/trees`, token, { base_tree: parent.tree.sha, tree: blobs.map((b) => ({ path: b.path, mode: b.mode, type: 'blob', sha: b.sha })) });
+    const commit = await this.send('POST', `${base}/git/commits`, token, { message: r.message, tree: tree.sha, parents: [r.baseSha] });
+    await this.send('POST', `${base}/git/refs`, token, { ref: `refs/heads/${r.branch}`, sha: commit.sha });   // a new ref only: an existing branch is an error, never updated
+    const pr = await this.send('POST', `${base}/pulls`, token, { title: r.title, head: r.branch, base: r.baseBranch, body: r.body, draft: r.draft, maintainer_can_modify: true });
+    return { number: Number(pr.number), url: String(pr.html_url), branch: r.branch, headSha: String(commit.sha) };
+  }
 }

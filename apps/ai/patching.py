@@ -75,6 +75,8 @@ class FileChange:
     additions: int
     deletions: int
     diff: str
+    content: str = ""          # the complete new file text: what a pull request commits (exactly what was verified)
+    mode: str = "100644"      # git file mode, kept so an executable stays executable
 
 
 def diff_stats(diff: str) -> tuple[int, int]:
@@ -83,7 +85,7 @@ def diff_stats(diff: str) -> tuple[int, int]:
     return add, dele
 
 
-def build_changes(originals: dict[str, str], changes: list[dict], existing: set[str]) -> list[FileChange]:
+def build_changes(originals: dict[str, str], changes: list[dict], existing: set[str], modes: dict[str, str] | None = None) -> list[FileChange]:
     """Turn the model's change list into file diffs. `originals` holds the contents of every file it was allowed to see. Raises EditError with ALL problems."""
     problems: list[str] = []
     out: list[FileChange] = []
@@ -103,7 +105,7 @@ def build_changes(originals: dict[str, str], changes: list[dict], existing: set[
                 if not diff:
                     raise EditError(f"{path}: the edits do not change anything")
                 add, dele = diff_stats(diff)
-                out.append(FileChange(path, "modified", add, dele, diff))
+                out.append(FileChange(path, "modified", add, dele, diff, new, (modes or {}).get(path, "100644") if (modes or {}).get(path) in ("100644", "100755") else "100644"))
             elif action == "create":
                 if path in existing or path in originals:
                     raise EditError(f"{path} already exists; modify it with edits instead of creating it")
@@ -114,7 +116,7 @@ def build_changes(originals: dict[str, str], changes: list[dict], existing: set[
                     content += "\n"
                 diff = make_diff(path, None, content)
                 add, dele = diff_stats(diff)
-                out.append(FileChange(path, "added", add, dele, diff))
+                out.append(FileChange(path, "added", add, dele, diff, content, "100644"))
             else:
                 raise EditError(f"{path}: action must be 'modify' or 'create'")
         except EditError as e:

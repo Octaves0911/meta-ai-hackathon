@@ -175,12 +175,15 @@ test('paths cannot traverse, be absolute or carry control characters', () => {
 });
 
 test('the file list drops secrets, vendored folders and lockfiles and says when it was truncated', async () => {
-  const { client } = stub({ '/git/trees/main?recursive=1': () => json({ truncated: true, tree: [
-    { path: 'src/app.js', type: 'blob', size: 10 }, { path: 'src', type: 'tree' }, { path: '.env', type: 'blob', size: 5 }, { path: 'node_modules/x/index.js', type: 'blob', size: 1 },
+  const SHA1 = 'a'.repeat(40);
+  const { client } = stub({ '/commits/main': () => json({ sha: SHA1 }), [`/git/trees/${SHA1}?recursive=1`]: () => json({ truncated: true, tree: [
+    { path: 'src/app.js', type: 'blob', size: 10, mode: '100755' }, { path: 'src', type: 'tree' }, { path: '.env', type: 'blob', size: 5 }, { path: 'node_modules/x/index.js', type: 'blob', size: 1 },
     { path: 'package-lock.json', type: 'blob', size: 99 }, { path: 'dist/out.js', type: 'blob', size: 1 }, { path: 'keys/server.pem', type: 'blob', size: 1 }, { path: 'test/app.test.js', type: 'blob', size: 7 } ] }) });
   const t = await client.tree('acme', 'shop', 'main', TOKEN);
   assert.deepEqual(t.files.map((f) => f.path), ['src/app.js', 'test/app.test.js']);
   assert.equal(t.truncated, true);
+  assert.equal(t.commit, SHA1);                                 // the exact commit everything else is pinned to
+  assert.equal(t.files[0].mode, '100755');                     // modes are kept so a PR does not drop the executable bit
 });
 
 test('reading a file: text only, size-capped, no secrets, no directories, safe URLs', async () => {
@@ -197,4 +200,107 @@ test('reading a file: text only, size-capped, no secrets, no directories, safe U
   await assert.rejects(client.file('acme', 'shop', 'bin.dat', 'main'), (e: any) => e.code === 'binary_file');
   await assert.rejects(client.file('acme', 'shop', 'a.js', '../../x'), (e: any) => e.code === 'invalid_repo');
   assert.equal(urls.length, 4); // refused requests never reached GitHub
+});
+
+// ---- pull requests
+import { GithubWriter, MAX_PR_FILES, prProblem, type PrRequest } from '../src/github.js';
+
+const BASE = 'b'.repeat(40);
+const PR: PrRequest = { owner: 'acme', name: 'shop-api', baseBranch: 'main', baseSha: BASE, branch: 'meetpilot/fix-add-1a2b3c4d', title: 'Fix add', body: '## What\nFixes add.', message: 'Fix add\n\nPrepared by MeetPilot', draft: true,
+  files: [{ path: 'src/add.js', content: 'module.exports = (a, b) => a + b;\n', mode: '100755' }, { path: 'test/add.test.js', content: "test('adds', () => {});\n" }] };
+
+/** Records every call and answers like GitHub's Git Data API. */
+function gh(overrides: Record<string, () => Response> = {}) {
+  const calls: { method: string; url: string; auth: string | null; body: any }[] = [];
+  const f = (async (url: string, init: RequestInit) => {
+    const method = init?.method ?? 'GET';
+    calls.push({ method, url, auth: new Headers(init?.headers).get('authorization'), body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    const key = `${method} ${url.replace('https://api.github.com', '')}`;
+    const hit = Object.keys(overrides).find((k) => { const [m, p] = k.split(' '); return m === method && url.endsWith(p); });
+    if (hit) return overrides[hit]();
+    if (key.endsWith(`/git/commits/${BASE}`)) return json({ sha: BASE, tree: { sha: 't'.repeat(40) } });
+    if (key.endsWith('/git/blobs')) return json({ sha: `blob${calls.length}`.padEnd(40, '0') });
+    if (key.endsWith('/git/trees')) return json({ sha: 'n'.repeat(40) });
+    if (key.endsWith('/git/commits')) return json({ sha: 'c'.repeat(40) });
+    if (key.endsWith('/git/refs')) return json({ ref: 'refs/heads/x' }, 201);
+    if (key.endsWith('/pulls')) return json({ number: 12, html_url: 'https://github.com/acme/shop-api/pull/12' }, 201);
+    return json({ message: 'unexpected' }, 500);
+  }) as unknown as typeof fetch;
+  return { writer: new GithubWriter(f), calls };
+}
+
+test('a pull request is one commit on a NEW branch cut from the verified commit, then a PR into the base', async () => {
+  const { writer, calls } = gh();
+  const r = await writer.createPullRequest(PR, TOKEN);
+  assert.deepEqual(r, { number: 12, url: 'https://github.com/acme/shop-api/pull/12', branch: 'meetpilot/fix-add-1a2b3c4d', headSha: 'c'.repeat(40) });
+  assert.deepEqual(calls.map((c) => `${c.method} ${c.url.replace('https://api.github.com/repos/acme/shop-api', '')}`),
+    [`GET /git/commits/${BASE}`, 'POST /git/blobs', 'POST /git/blobs', 'POST /git/trees', 'POST /git/commits', 'POST /git/refs', 'POST /pulls']);
+  const tree = calls.find((c) => c.url.endsWith('/git/trees'))!.body;
+  assert.equal(tree.base_tree, 't'.repeat(40));
+  assert.deepEqual(tree.tree.map((e: any) => [e.path, e.mode, e.type]), [['src/add.js', '100755', 'blob'], ['test/add.test.js', '100644', 'blob']]);   // the executable bit is kept
+  const commit = calls.find((c) => c.url.endsWith('/git/commits'))!.body;
+  assert.deepEqual([commit.parents, commit.tree], [[BASE], 'n'.repeat(40)]);                                                                         // parent = the commit that was verified
+  assert.deepEqual(calls.find((c) => c.url.endsWith('/git/refs'))!.body, { ref: 'refs/heads/meetpilot/fix-add-1a2b3c4d', sha: 'c'.repeat(40) });
+  const pull = calls.find((c) => c.url.endsWith('/pulls'))!.body;
+  assert.deepEqual([pull.head, pull.base, pull.draft, pull.title], ['meetpilot/fix-add-1a2b3c4d', 'main', true, 'Fix add']);
+});
+
+test('the base branch is never written, no force push, no merge, and the token is only in the Authorization header', async () => {
+  const { writer, calls } = gh();
+  await writer.createPullRequest({ ...PR, draft: false }, TOKEN);
+  for (const c of calls) {
+    assert.ok(['GET', 'POST'].includes(c.method), c.method);                       // no PATCH (ref update/force), PUT (merge) or DELETE
+    assert.equal(c.auth, `Bearer ${TOKEN}`);
+    assert.ok(!c.url.includes('github_pat') && !JSON.stringify(c.body ?? '').includes('github_pat'));
+    assert.ok(!/\/merge|\/refs\/heads\/main/.test(c.url));
+  }
+  assert.ok(!JSON.stringify(calls.map((c) => c.body)).includes('"force"'));
+  assert.equal(calls.find((c) => c.url.endsWith('/pulls'))!.body.draft, false);
+});
+
+test('everything unsafe is refused before a single request', async () => {
+  const bad: [Partial<PrRequest>, RegExp][] = [
+    [{ files: [{ path: '.github/workflows/ci.yml', content: 'x' }] }, /cannot be changed/], [{ files: [{ path: '.env', content: 'A=1' }] }, /cannot be changed/],
+    [{ files: [{ path: '../evil', content: 'x' }] }, /cannot be changed/], [{ files: [{ path: 'keys/id_rsa', content: 'x' }] }, /cannot be changed/],
+    [{ files: [{ path: 'a.js', content: 'x' }, { path: 'a.js', content: 'y' }] }, /twice/], [{ files: [{ path: 'bin.dat', content: 'a\0b' }] }, /not text/],
+    [{ files: [{ path: 'a.sh', content: 'x', mode: '120000' }] }, /file mode/], [{ files: [] }, /between 1 and/],
+    [{ files: Array.from({ length: MAX_PR_FILES + 1 }, (_, i) => ({ path: `f${i}.js`, content: 'x' })) }, /between 1 and/],
+    [{ files: [{ path: 'big.txt', content: 'x'.repeat(300_001) }] }, /too large/],
+    [{ branch: 'main' }, /branch name/], [{ branch: 'meetpilot/Bad Name' }, /branch name/], [{ branch: 'feature/x' }, /branch name/], [{ branch: 'meetpilot/..' }, /branch name/],
+    [{ baseSha: 'abc' }, /commit id/], [{ baseBranch: '../x' }, /base branch/], [{ title: '' }, /title/], [{ title: 'a\nb' }, /title/], [{ body: 'x'.repeat(20_001) }, /too long/],
+    [{ owner: '../x' }, /invalid repository/],
+  ];
+  for (const [patch, re] of bad) {
+    const { writer, calls } = gh();
+    await assert.rejects(writer.createPullRequest({ ...PR, ...patch } as PrRequest, TOKEN), (e: any) => e instanceof GithubError && e.status === 400 && re.test(e.message), JSON.stringify(patch).slice(0, 60));
+    assert.equal(calls.length, 0);
+  }
+  assert.equal(prProblem(PR), null);
+});
+
+test('write failures are mapped, stop the sequence, and never carry the token', async () => {
+  const cases: [string, Response, number, string][] = [
+    ['POST /git/blobs', json({ message: 'Not Found' }, 404), 403, 'no_write_access'], ['POST /git/refs', json({ message: 'Resource not accessible by personal access token' }, 403), 403, 'no_write_access'],
+    ['POST /git/refs', json({ message: 'Reference already exists' }, 422), 409, 'branch_exists'], ['POST /pulls', json({ message: 'Validation Failed', errors: [{ message: `A pull request already exists ${TOKEN}` }] }, 422), 422, 'github_rejected'],
+    ['GET /git/commits/' + BASE, json({ message: 'Bad credentials' }, 401), 401, 'bad_token'], ['POST /git/trees', json({}, 429), 429, 'rate_limited'], ['POST /git/commits', json({}, 500), 502, 'github_error'],
+  ];
+  for (const [at, res, status, code] of cases) {
+    const { writer, calls } = gh({ [at]: () => res });
+    await assert.rejects(writer.createPullRequest(PR, TOKEN), (e: any) => e instanceof GithubError && e.status === status && e.code === code && !e.message.includes(TOKEN) && !e.message.includes('SECRETSECRET'), at);
+    if (at.startsWith('POST /git/refs')) assert.ok(!calls.some((c) => c.url.endsWith('/pulls')), 'no PR after the branch failed');
+  }
+  const down = new GithubWriter((async () => { throw new Error(`ECONNRESET ${TOKEN}`); }) as unknown as typeof fetch);
+  await assert.rejects(down.createPullRequest(PR, TOKEN), (e: any) => e.code === 'github_unreachable' && !e.message.includes(TOKEN));
+});
+
+test('the service refuses to open a pull request without a stored token and calls nothing', async () => {
+  const db = fakeDb();
+  const { writer, calls } = gh();
+  const svc = new GithubService(db, stub({}).client, writer);
+  await assert.rejects(svc.createPullRequest('p', PR), (e: any) => e.code === 'github_not_connected' && e.status === 409);
+  assert.equal(calls.length, 0);
+  const ok = new GithubService(db, stub({ '/user': () => json({ login: 'x' }) }).client, writer);
+  await ok.saveToken('p', 'u', TOKEN);
+  assert.equal((await ok.createPullRequest('p', PR)).number, 12);
+  assert.ok(calls.every((c) => c.auth === `Bearer ${TOKEN}`));
 });

@@ -123,6 +123,33 @@ class VerifyTest(unittest.TestCase):
         self.assertIn("***", next(s for s in v.steps if s.label == "clone").output)
         self.assertNotIn(secret, " ".join(" ".join(c["cmd"]) for sess in be.sessions for c in sess.commands))  # not even in an argument
 
+    def test_a_pinned_commit_is_fetched_exactly_and_the_token_stays_in_the_fetch_environment(self):
+        sha = "d" * 40
+        secret = "ghs_SECRET_TOKEN_123"
+        be = ScriptedBackend(script())
+        v = go(be, RepoSource(clone_url="https://github.com/o/r.git", commit=sha, ref="main", token=secret))
+        self.assertEqual(v.status, "verified")
+        setup = be.sessions[0]
+        cmds = [c["cmd"] for c in setup.commands]
+        self.assertEqual(cmds[0][:2], ["git", "init"])
+        self.assertIn(["git", "-C", "/work", "remote", "add", "origin", "https://github.com/o/r.git"], cmds)
+        self.assertIn(["git", "-C", "/work", "fetch", "--quiet", "--depth", "1", "origin", sha], cmds)
+        self.assertIn(["git", "-C", "/work", "checkout", "--quiet", "FETCH_HEAD"], cmds)
+        self.assertFalse(any(c[:2] == ["git", "clone"] for c in cmds))
+        fetch = next(c for c in setup.commands if "fetch" in c["cmd"])
+        self.assertIn("Authorization", str(fetch["env"]))                                  # only the network step carries the credential
+        self.assertTrue(all(not c["env"] for c in setup.commands if "fetch" not in c["cmd"] and c["cmd"][0] == "git"))
+        self.assertNotIn(secret, " ".join(" ".join(c["cmd"]) for s in be.sessions for c in s.commands))
+        self.assertEqual(be.sessions[1].spec.network, "none")
+
+    def test_a_malformed_commit_id_is_refused_before_anything_runs(self):
+        for bad in ("main", "abc", "x" * 40, "d" * 39, "d" * 40 + "; rm -rf /"):
+            be = ScriptedBackend(script())
+            v = go(be, RepoSource(clone_url="https://github.com/o/r.git", commit=bad))
+            self.assertEqual(v.status, "failed", bad)
+            self.assertIn("not a valid commit id", v.reason)
+            self.assertFalse(any(c["cmd"][:2] in (["git", "fetch"],) for s in be.sessions for c in s.commands))
+
     def test_an_uploaded_workspace_gets_registry_access_only(self):
         be = ScriptedBackend(script())
         v = go(be, RepoSource(tarball=b"x"))

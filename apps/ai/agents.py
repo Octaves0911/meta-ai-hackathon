@@ -199,7 +199,8 @@ def _mock_run(name: str, req: RunRequest, state: _State) -> RunResponse:
         repo = next((r for r in req.repos if r.id == req.repo_id), req.repos[0] if req.repos else None)
         if repo:
             diff = ("diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1,3 +1,4 @@\n const a = 1;\n-const b = 2;\n+const b = 3;\n+const c = 4;\n module.exports = a;\n")
-            arts.append(ArtifactOut(type="diff", title=f"Change to {repo.full_name}", payload={"diff": diff, "repo": repo.full_name, "branch": repo.default_branch, "files": [{"path": "src/app.js", "status": "modified", "additions": 2, "deletions": 1}]}))
+            arts.append(ArtifactOut(type="diff", title=f"Change to {repo.full_name}", payload={"diff": diff, "repo": repo.full_name, "branch": repo.default_branch, "base_sha": "a" * 40,
+                                                                                    "commit_files": [{"path": "src/app.js", "status": "modified", "content": "const a = 1;\nconst b = 3;\nconst c = 4;\nmodule.exports = a;\n", "mode": "100644"}], "files": [{"path": "src/app.js", "status": "modified", "additions": 2, "deletions": 1}]}))
             arts.append(ArtifactOut(type="verification", title="Verification: Not tested", payload={"status": "not_tested", "reason": "Mock mode: nothing was run.", "mode": "mock", "repo": repo.full_name, "branch": repo.default_branch, "ecosystem": "", "steps": [], "warnings": [], "seconds": 0, "cost_usd": 0, "summary": "Not tested"}))
     if name == "marketing":
         arts.append(ArtifactOut(type="table", title="Timeline", payload={"columns": ["Phase", "Start", "End", "Owner", "Deliverable"], "rows": [["Teaser", "Nov 8, 2026", "Nov 15, 2026", "Unassigned", "Mock teaser"], ["Launch", "Nov 22, 2026", "Nov 22, 2026", "Unassigned", "Mock launch"]]}))
