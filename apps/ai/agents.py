@@ -184,6 +184,8 @@ def _mock_run(name: str, req: RunRequest, state: _State) -> RunResponse:
                            artifacts=arts, consultations=state.consultations)
     md = f"# {name.title()} deliverable: {t.title}{rev}\n\n## Summary\nMock {name} output for the task above.{addressed}{consult_md}\n\n## Sources\n{sources}\n"
     arts = [ArtifactOut(type="markdown", title=f"{name.title()} report" if name != "code" else "Implementation plan", content=md)]
+    if name == "research":
+        arts.append(ArtifactOut(type="link", title="Sources (1)", payload={"items": [{"title": "Example pricing page", "url": "https://example.com/pricing", "host": "example.com"}], "searched_on": "mock"}))
     if name == "designer":
         svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect width="320" height="180" fill="#1b2330"/>'
                f'<rect x="20" y="20" width="280" height="30" rx="6" fill="#6c8cff"/><text x="30" y="40" fill="#fff" font-size="14" font-family="sans-serif">{_esc(t.title[:34])}</text>'
@@ -248,6 +250,10 @@ def _email_payload(req: RunRequest, data: dict) -> tuple[dict, "CtxItem | None"]
 
 
 async def _real_run(name: str, req: RunRequest, state: _State, trace: Trace) -> RunResponse:
+    if name == "research":
+        from research import run_research  # lazy: research imports this module
+
+        return await run_research(req, state, trace)
     model = agent_model(name)
     task = _task_block(req)
     async with trace.step("read", "Read the brief", {"lines": len(req.source_lines), "decisions": len(req.decisions), "neighbours": len(req.neighbours),

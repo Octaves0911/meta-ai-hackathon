@@ -18,7 +18,7 @@ CHECK_SCHEMA = {
 }
 
 RUBRIC = {
-    "research": "Does it answer the task? Is every claim traceable to the project context (named sources)? Are unknowns listed instead of guessed?",
+    "research": "Does it answer the task? Is every claim traceable to the project brief OR to the numbered web findings and verified sources given (a [n] marker is a valid citation; web figures need no other source)? Are unknowns listed instead of guessed? Flag only invented numbers, ignored decisions and unsupported claims.",
     "marketing": "Does it use the CURRENT decisions (dates, pricing) from the brief? Is every number sourced or labelled as an assumption? Are owners real people from the brief?",
     "designer": "Does the brief state goal, audience, palette, type and layout, with real copy? Does it respect the constraints stated in the meeting?",
     "communication": "Do all dates, numbers and names in the email appear in the brief (use the latest decision values)? No invented recipients? Is the tone right for the audience? Anything promised that was not decided?",
