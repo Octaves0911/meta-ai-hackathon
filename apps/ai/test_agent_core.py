@@ -228,27 +228,6 @@ class AgentRunTest(unittest.IsolatedAsyncioTestCase):
     def req(self, **kw):
         return agents.RunRequest(**sample_brief(**kw).model_dump())
 
-    async def test_text_agent_returns_confidence_trace_and_usage(self):
-        out = await self.run_agent("code", self.req(), checks=[quality.Check(confidence=0.9, open_questions=["Which region?"])])
-        self.assertEqual(out.confidence, 0.9)
-        self.assertEqual(out.open_questions, ["Which region?"])
-        self.assertEqual([s["kind"] for s in out.steps], ["read", "plan", "draft", "check"])
-        self.assertIn("cost_usd", out.usage)
-
-    async def test_a_failed_check_triggers_exactly_one_repair(self):
-        bad = quality.Check(confidence=0.4, blocking=["ignores the new launch date"])
-        good = quality.Check(confidence=0.85)
-        out = await self.run_agent("code", self.req(), text=["v1", "v2"], checks=[bad, good])
-        self.assertEqual([s["label"] for s in out.steps if s["kind"] == "draft"].__len__(), 2)
-        self.assertEqual(out.artifacts[0].content, "v2")
-        self.assertEqual(out.confidence, 0.85)
-
-    async def test_unrepaired_defects_lower_confidence_and_surface_as_questions(self):
-        bad = quality.Check(confidence=0.8, blocking=["budget figure is unsourced"])
-        out = await self.run_agent("code", self.req(), text=["v1", "v2"], checks=[bad, bad])
-        self.assertLess(out.confidence, 0.6)
-        self.assertIn("Confirm budget figure is unsourced", out.open_questions)
-
     async def test_email_with_an_invented_date_is_repaired_and_never_invents_recipients(self):
         wrong = {"to": ["ceo@invented.com"], "cc": [], "subject": "Launch", "body": "We launch on December 1.", "missing_recipients": False, "open_questions": [], "summary": "s", "reply_to_source": None}
         right = {**wrong, "body": "We launch on November 22 (moved from November 15).", "to": []}

@@ -2,9 +2,10 @@ import { ArrowLeft, Ban, Bot, CheckCircle2, GitBranch, Hand, Maximize2, MessageC
 import { useCallback, useEffect, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
 import { MAX_REVISIONS, type ExecutionDetail } from '@meetpilot/shared';
-import { AgentTrace, ConfidencePill, NeedsInput, RunWith, StagePlan, usd } from '../components/AgentInsights';
+import { AgentTrace, ConfidencePill, NeedsInput, RepoChoice, RunWith, StagePlan, usd } from '../components/AgentInsights';
 import { AppShell } from '../components/AppShell';
 import { ReviewChat, RevisionDiff } from '../components/ReviewChat';
+import type { LineComment } from '../components/viewers/DiffViewer';
 import { SendEmailPanel } from '../components/SendEmailPanel';
 import { ArtifactView } from '../components/viewers/ArtifactView';
 import { api, useSession } from '../lib/api';
@@ -23,6 +24,7 @@ export function Review() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [full, setFull] = useState(false);
+  const [lineComments, setLineComments] = useState<LineComment[]>([]);
 
   const load = useCallback(() => api<ExecutionDetail>(`/executions/${id}`).then(setD).catch((e) => setError(e.message)), [id]);
   useEffect(() => { if (user) void load(); }, [user, load]);
@@ -50,9 +52,9 @@ export function Review() {
   const submit = async (verdict: 'approve' | 'changes' | 'reject', choice?: 'A' | 'B') => {
     setBusy(true); setError('');
     try {
-      await api(`/executions/${d.id}/review`, { method: 'POST', json: { verdict, choice, comment: comment.trim() || undefined } });
+      await api(`/executions/${d.id}/review`, { method: 'POST', json: { verdict, choice, comment: comment.trim() || undefined, lineComments: lineComments.length ? lineComments : undefined } });
       toast.success(verdict === 'approve' ? 'Approved. The task is done.' : verdict === 'reject' ? 'Rejected. The task is back with a person.' : 'Sent back to the agent');
-      setComment(''); setTab(0); await load();
+      setComment(''); setLineComments([]); setTab(0); await load();
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   };
   const retry = async () => { try { await api(`/executions/${d.id}/retry`, { method: 'POST' }); toast('Retrying…'); await load(); } catch (e) { toast.error((e as Error).message); } };
@@ -80,6 +82,7 @@ export function Review() {
             <div><dt>Reviewer</dt><dd className="row" style={{ gap: 8 }}>{d.reviewer ? <><Avatar name={d.reviewer.username} size="sm" />{d.reviewer.username}</> : '—'}</dd></div>
             <div><dt>Due</dt><dd>{d.dueDate ?? '—'}</dd></div>
             <div><dt>Revision</dt><dd>{d.revision} of {MAX_REVISIONS}</dd></div>
+            {d.repo && <div><dt>Repository</dt><dd><a href={`https://github.com/${d.repo.fullName}`} target="_blank" rel="noreferrer noopener">{d.repo.fullName}</a></dd></div>}
             {d.confidence != null && <div><dt>Confidence</dt><dd><ConfidencePill value={d.confidence} /></dd></div>}
             {d.usage && d.usage.calls > 0 && <div><dt>Cost</dt><dd title={`${d.usage.promptTokens + d.usage.completionTokens} tokens${d.usage.searches ? ` · ${d.usage.searches} web search${d.usage.searches > 1 ? 'es' : ''}` : ''} · ${d.usage.models.join(', ')}`}>{usd(d.usage.costUsd)}</dd></div>}
           </dl>
@@ -87,6 +90,7 @@ export function Review() {
 
         {d.approvedChoice && <div className="note-inline success" role="status"><CheckCircle2 size={18} /> <span><strong>Approved direction {d.approvedChoice}.</strong> {arts.find((a) => a.payload?.direction === d.approvedChoice)?.payload?.name ?? ''}</span></div>}
         <StagePlan plan={d.stagePlan} />
+        <RepoChoice d={d} onDone={load} />
         <RunWith d={d} onDone={load} />
         {d.status === 'rejected' && <div className="note-inline info" role="status"><Ban size={18} /> <span><strong>Rejected.</strong> {d.reviews.filter((r) => r.verdict === 'reject').at(-1)?.comment ?? ''} The task is back with a person.</span></div>}
         {d.status === 'skipped_human' && <div className="note-inline info" role="status"><Hand size={18} /> <span><strong>Left for a human.</strong> {d.routeReason}</span></div>}
@@ -115,7 +119,7 @@ export function Review() {
             </div>
             <button className="ghost icon" style={{ margin: 6 }} onClick={() => setFull(!full)} aria-label={full ? 'Exit full screen' : 'View full screen'} title={full ? 'Exit full screen' : 'Full screen'}>{full ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
             </div>
-            <div style={{ padding: 20, ...(full ? { overflow: 'auto', flex: 1 } : {}) }}>{current && <ArtifactView artifact={current} executionId={d.id} editable={d.canReview} onSaved={load} />}</div>
+            <div style={{ padding: 20, ...(full ? { overflow: 'auto', flex: 1 } : {}) }}>{current && <ArtifactView artifact={current} executionId={d.id} editable={d.canReview} onSaved={load} lineComments={lineComments} onLineComments={setLineComments} />}</div>
           </div>
         )}
 
@@ -147,7 +151,7 @@ export function Review() {
             <span className="faint" style={{ fontSize: 13 }}>{revisionsLeft > 0 ? `${revisionsLeft} revision${revisionsLeft > 1 ? 's' : ''} left` : 'No revisions left — approve or handle this yourself.'}</span>
             <div className="row">
               <button disabled={busy || !comment.trim()} onClick={() => submit('reject')} title="Stop this work and hand the task back to a person. Add the reason above."><Ban size={15} /> Reject</button>
-              <button disabled={busy || !comment.trim() || revisionsLeft <= 0} onClick={() => submit('changes')}><RotateCcw size={15} /> Request changes</button>
+              <button disabled={busy || (!comment.trim() && lineComments.length === 0) || revisionsLeft <= 0} onClick={() => submit('changes')}><RotateCcw size={15} /> Request changes{lineComments.length ? ` (${lineComments.length} line comment${lineComments.length > 1 ? 's' : ''})` : ''}</button>
               {directions.length >= 2
                 ? directions.map((a) => <button key={a.id} className="primary" disabled={busy} onClick={() => submit('approve', a.payload!.direction)} title={`Approve direction ${a.payload!.direction}: ${a.payload!.name ?? ''}`}><Send size={15} /> Approve {a.payload!.direction}</button>)
                 : <button className="primary" disabled={busy} onClick={() => submit('approve')}><Send size={15} /> Approve</button>}

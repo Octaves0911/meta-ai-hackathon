@@ -192,13 +192,17 @@ export interface ExecutionSummary {
   /** Design work with two directions: which one the reviewer approved. */
   approvedChoice: 'A' | 'B' | null;
   /** Planned agents for this task, e.g. designer → code (web pages only), and the agent suggested when the router was unsure. */
-  stagePlan: { stages: { agent: AgentName; goal: string }[]; scope: 'deliverable' | 'build'; suggestedAgent?: AgentName | null; missingInputs?: string[] } | null;
+  stagePlan: { stages?: { agent: AgentName; goal: string }[]; scope?: 'deliverable' | 'build'; suggestedAgent?: AgentName | null; missingInputs?: string[];
+    /** Code work: several linked repositories fit and the reviewer must choose one. */
+    repoChoice?: { reason: string; candidates: { repo_id: string; full_name: string; score: number; reason: string }[] } } | null;
+  /** Code work: the linked repository this execution targets. */
+  repo: { id: string; fullName: string } | null;
 }
 export type StepKind = 'plan' | 'search' | 'read' | 'consult' | 'tool' | 'draft' | 'check';
 export interface ExecutionStep { seq: number; revision: number; kind: StepKind; label: string; detail: Record<string, unknown>; status: 'running' | 'done' | 'failed'; startedAt: string; endedAt: string | null }
-export interface ExecutionUsage { calls: number; searches?: number; promptTokens: number; completionTokens: number; costUsd: number; models: string[] }
+export interface ExecutionUsage { calls: number; searches?: number; sandboxCostUsd?: number; promptTokens: number; completionTokens: number; costUsd: number; models: string[] }
 export interface ExecutionArtifact {
-  id: string; type: 'markdown' | 'image' | 'pdf' | 'video' | 'diff' | 'link' | 'file' | 'email_draft' | 'html' | 'table';
+  id: string; type: 'markdown' | 'image' | 'pdf' | 'video' | 'diff' | 'link' | 'file' | 'email_draft' | 'html' | 'table' | 'verification';
   title: string | null; uri: string | null; payload: Record<string, any> | null; revision: number;
 }
 export interface Consultation { id: string; fromAgent: string; toAgent: string; question: string; answer: string | null; depth: number }
@@ -210,6 +214,7 @@ export interface ExecutionDetail extends ExecutionSummary {
   /** Email-drafting runs only: whether the reviewer allowed sending via Gmail, and every send made from this run (audit). */
   send: { granted: boolean | null; account: string | null; sent: { sentAt: string; from: string | null; to: string[]; cc: string[]; subject: string; messageId: string | null; attachments: { filename: string; size: number }[] }[] } | null;
 }
+export const ChooseRepoBody = z.object({ repoId: z.string().uuid() });
 export const RunWithBody = z.object({ agent: z.enum(['research', 'marketing', 'designer', 'communication', 'code']) });
 export const ReviewBody = z.object({
   verdict: z.enum(['approve', 'changes', 'reject']),
@@ -321,3 +326,30 @@ export interface ProjectRepo {
   isPrivate: boolean; canPush: boolean; language: string | null; languages: Record<string, number>; indexedAt: string | null; createdAt: string;
 }
 export interface GithubStatus { connected: boolean; account: string | null }
+
+// ---- unified diff parsing (Code agent review)
+export interface PatchLine { type: 'ctx' | 'add' | 'del' | 'note'; text: string; oldNo: number | null; newNo: number | null }
+export interface PatchHunk { header: string; lines: PatchLine[] }
+export interface PatchFile { path: string; status: 'added' | 'modified' | 'deleted'; additions: number; deletions: number; hunks: PatchHunk[] }
+/** Parses the `diff --git` unified diffs the Code agent produces. Tolerant of junk; never throws. */
+export function parseDiff(text: string): PatchFile[] {
+  const files: PatchFile[] = [];
+  let file: PatchFile | null = null, hunk: PatchHunk | null = null, o = 0, n = 0;
+  for (const raw of String(text ?? '').split('\n')) {
+    const g = /^diff --git a\/(.+?) b\/(.+)$/.exec(raw);
+    if (g) { file = { path: g[2], status: 'modified', additions: 0, deletions: 0, hunks: [] }; files.push(file); hunk = null; continue; }
+    if (!file) continue;
+    if (raw.startsWith('new file mode')) { file.status = 'added'; continue; }
+    if (raw.startsWith('deleted file mode')) { file.status = 'deleted'; continue; }
+    if (raw.startsWith('--- ') || raw.startsWith('+++ ') || raw.startsWith('index ') || raw.startsWith('similarity ') || raw.startsWith('rename ')) { if (!hunk) continue; }
+    const h = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
+    if (h) { hunk = { header: raw, lines: [] }; file.hunks.push(hunk); o = Number(h[1]); n = Number(h[2]); continue; }
+    if (!hunk) continue;
+    if (raw.startsWith('\\')) { hunk.lines.push({ type: 'note', text: raw.slice(2), oldNo: null, newNo: null }); continue; }
+    const c = raw[0], body = raw.slice(1);
+    if (c === '+') { hunk.lines.push({ type: 'add', text: body, oldNo: null, newNo: n++ }); file.additions++; }
+    else if (c === '-') { hunk.lines.push({ type: 'del', text: body, oldNo: o++, newNo: null }); file.deletions++; }
+    else if (c === ' ') { hunk.lines.push({ type: 'ctx', text: body, oldNo: o++, newNo: n++ }); }
+  }
+  return files;
+}

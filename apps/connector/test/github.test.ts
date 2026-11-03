@@ -52,6 +52,13 @@ test('errors are short, mapped, and never contain the token', async () => {
   await assert.rejects(down.repo('a', 'b', TOKEN), (e: any) => e.code === 'github_unreachable' && !e.message.includes(TOKEN));
 });
 
+test('a renamed or moved repository says so, and redirects are never followed', async () => {
+  const seen: RequestInit[] = [];
+  const f = (async (_u: string, init: RequestInit) => { seen.push(init); return new Response(null, { status: 301, headers: { location: 'https://evil.example/x' } }); }) as unknown as typeof fetch;
+  await assert.rejects(new GithubClient(f).repo('a', 'b', TOKEN), (e: any) => e.code === 'repo_moved' && e.status === 404 && /moved or been renamed/.test(e.message) && !e.message.includes(TOKEN));
+  assert.equal(seen[0].redirect, 'manual');
+});
+
 test('a 404 tells the user to add a token only when none was used', async () => {
   const { client } = stub({});
   await assert.rejects(client.repo('a', 'b'), /private, add a GitHub token/);
@@ -151,4 +158,43 @@ test('inspection uses the stored token for private repositories', async () => {
   calls.length = 0;
   await svc.inspect('p', 'acme', 'shop-api');
   assert.ok(calls.length >= 1 && calls.every((c) => c.auth === `Bearer ${TOKEN}`));
+});
+
+// ---- read-only repository access for the Code agent
+import { isSecretPath, safePath, MAX_FILE_BYTES } from '../src/github.js';
+
+test('secret-looking files are never readable, however they are spelled', () => {
+  for (const p of ['.env', '.env.local', 'config/.env.production', '.npmrc', 'a/b/id_rsa', 'id_ed25519.pub', 'certs/server.pem', 'keys/app.key', 'credentials.json', 'secrets.yml', 'secret.json',
+    'deploy/service-account-prod.json', 'x/.aws/credentials', 'store.p12', 'my.keystore', '.ssh/config', '.netrc', 'a/.git-credentials']) assert.equal(isSecretPath(p) || safePath(p) === null, true, p);
+  for (const p of ['src/environment.ts', 'docs/secrets-management.md'.replace('secrets-management.md', 'security.md'), 'src/keyboard.ts', 'README.md', 'lib/credentialsProvider.ts']) assert.notEqual(safePath(p), null, p);
+});
+
+test('paths cannot traverse, be absolute or carry control characters', () => {
+  for (const p of ['../etc/passwd', 'a/../../b', '/etc/passwd', 'a//b', './a', 'a/./b', 'a\\b', 'a\nb', 'a\0b', '', 'x'.repeat(301)]) assert.equal(safePath(p), null, JSON.stringify(p));
+  assert.equal(safePath('src/app/main.ts'), 'src/app/main.ts');
+});
+
+test('the file list drops secrets, vendored folders and lockfiles and says when it was truncated', async () => {
+  const { client } = stub({ '/git/trees/main?recursive=1': () => json({ truncated: true, tree: [
+    { path: 'src/app.js', type: 'blob', size: 10 }, { path: 'src', type: 'tree' }, { path: '.env', type: 'blob', size: 5 }, { path: 'node_modules/x/index.js', type: 'blob', size: 1 },
+    { path: 'package-lock.json', type: 'blob', size: 99 }, { path: 'dist/out.js', type: 'blob', size: 1 }, { path: 'keys/server.pem', type: 'blob', size: 1 }, { path: 'test/app.test.js', type: 'blob', size: 7 } ] }) });
+  const t = await client.tree('acme', 'shop', 'main', TOKEN);
+  assert.deepEqual(t.files.map((f) => f.path), ['src/app.js', 'test/app.test.js']);
+  assert.equal(t.truncated, true);
+});
+
+test('reading a file: text only, size-capped, no secrets, no directories, safe URLs', async () => {
+  const urls: string[] = [];
+  const f = (async (url: string) => { urls.push(url); if (url.includes('/contents/dir')) return json([{ name: 'a' }]); if (url.includes('big')) return json({ type: 'file', size: MAX_FILE_BYTES + 1, content: '' });
+    if (url.includes('bin')) return json({ type: 'file', size: 3, content: b64('a\0b') }); return json({ type: 'file', size: 5, content: b64('hello') }); }) as unknown as typeof fetch;
+  const client = new GithubClient(f);
+  assert.deepEqual(await client.file('acme', 'shop', 'src/a b.js', 'feature/x', TOKEN), { path: 'src/a b.js', size: 5, text: 'hello' });
+  assert.ok(urls[0].includes('/contents/src/a%20b.js?ref=feature%2Fx'));
+  await assert.rejects(client.file('acme', 'shop', '.env', 'main'), (e: any) => e.code === 'path_not_allowed');
+  await assert.rejects(client.file('acme', 'shop', '../x', 'main'), (e: any) => e.code === 'path_not_allowed');
+  await assert.rejects(client.file('acme', 'shop', 'dir', 'main'), (e: any) => e.code === 'not_a_file');
+  await assert.rejects(client.file('acme', 'shop', 'big.js', 'main'), (e: any) => e.code === 'file_too_large' && e.status === 413);
+  await assert.rejects(client.file('acme', 'shop', 'bin.dat', 'main'), (e: any) => e.code === 'binary_file');
+  await assert.rejects(client.file('acme', 'shop', 'a.js', '../../x'), (e: any) => e.code === 'invalid_repo');
+  assert.equal(urls.length, 4); // refused requests never reached GitHub
 });

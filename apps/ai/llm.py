@@ -72,6 +72,14 @@ def _record(model: str, body: dict, searches: int = 0) -> None:
         acc["models"].append(model)
 
 
+def add_cost(usd: float, key: str = "other_cost_usd") -> None:
+    """Costs that are not model tokens (sandbox time) join the run's total so the reviewer and the daily cap see them."""
+    acc = _usage.get()
+    if acc is not None and usd > 0:
+        acc["cost_usd"] = round(acc["cost_usd"] + usd, 6)
+        acc[key] = round(acc.get(key, 0.0) + usd, 6)
+
+
 def agent_model(agent: str | None) -> str | None:
     """Per-agent model: AGENT_MODEL_<NAME>, then AGENT_MODEL, else the global LLM_MODEL (handled in _call)."""
     if agent:
