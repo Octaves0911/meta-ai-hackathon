@@ -42,6 +42,9 @@ export function buildApp(db: pg.Pool, connector = new Connector(db), github = ne
   app.put('/github/token', async (req) => { const b = z.object({ projectId: uuid, userId: uuid, token: z.string().min(20).max(255).regex(/^[A-Za-z0-9_\-]+$/) }).parse(req.body); return github.saveToken(b.projectId, b.userId, b.token); });
   app.delete('/github/token', async (req, reply) => { await github.removeToken(uuid.parse((req.query as any)?.projectId)); return reply.status(204).send(); });
   app.post('/github/inspect', async (req) => { const b = z.object({ projectId: uuid, owner: repoPart, name: repoPart }).parse(req.body); return github.inspect(b.projectId, b.owner, b.name); });
+  // Read-only repository access for the Code agent: the file list and single text files. Secrets are refused here regardless of what the caller asks.
+  app.get('/github/tree', async (req) => { const q = z.object({ projectId: uuid, owner: repoPart, name: repoPart, ref: z.string().min(1).max(200) }).parse(req.query); return github.tree(q.projectId, q.owner, q.name, q.ref); });
+  app.get('/github/file', async (req) => { const q = z.object({ projectId: uuid, owner: repoPart, name: repoPart, ref: z.string().min(1).max(200), path: z.string().min(1).max(300) }).parse(req.query); return github.file(q.projectId, q.owner, q.name, q.path, q.ref); });
   /** For the sandbox's clone only; never exposed to a browser (the backend does not proxy it). */
   app.get('/github/clone-token', async (req) => ({ token: await github.cloneToken(uuid.parse((req.query as any)?.projectId)) }));
 

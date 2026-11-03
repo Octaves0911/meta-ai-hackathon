@@ -10,6 +10,21 @@ const API = () => (process.env.GITHUB_API_URL ?? 'https://api.github.com').repla
 const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const NAME = /^[A-Za-z0-9._-]{1,100}$/;
 export const MAX_INDEX_CHARS = 6000;
+export const MAX_TREE_FILES = 6000;
+export const MAX_FILE_BYTES = 200_000;
+
+/** Files an agent must never read, whatever the repository: credentials, keys, environment files. Enforced here, the last line of defence. */
+const SECRET_PATH = /(^|\/)(\.env(\..*)?|\.npmrc|\.pypirc|\.netrc|\.git-credentials|\.aws|\.ssh|\.gnupg|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|credentials(\.[a-z]+)?|secrets?(\.[a-z]+)?|service[-_]?account.*\.json|.*\.(pem|key|p12|pfx|jks|keystore|kdbx))$/i;
+const SECRET_DIR = /(^|\/)\.(ssh|aws|gnupg|kube|docker)(\/|$)/i;  // anything inside these directories
+export const isSecretPath = (p: string) => SECRET_PATH.test(p) || SECRET_DIR.test(p);
+/** A repository-relative path: no traversal, no absolute paths, no control characters, not a secret. */
+export function safePath(p: string): string | null {
+  if (typeof p !== 'string' || !p || p.length > 300 || p.startsWith('/') || /[\0\r\n\\]/.test(p)) return null;
+  if (p.split('/').some((seg) => seg === '..' || seg === '.' || seg === '')) return null;
+  return isSecretPath(p) ? null : p;
+}
+const SKIP_DIRS = /(^|\/)(node_modules|\.git|dist|build|out|coverage|vendor|\.next|\.venv|__pycache__|\.cache|target)\//;
+const LOCKFILES = /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|Cargo\.lock|Gemfile\.lock|composer\.lock)$/;
 const MAX_README = 1800;
 
 export interface RepoMeta { owner: string; name: string; defaultBranch: string; description: string | null; isPrivate: boolean; canPush: boolean; language: string | null; htmlUrl: string }
@@ -26,9 +41,10 @@ export class GithubClient {
     try {
       res = await this.f(`${API()}${path}`, {
         headers: { accept: 'application/vnd.github+json', 'user-agent': 'MeetPilot', 'x-github-api-version': '2022-11-28', ...(token ? { authorization: `Bearer ${token}` } : {}) },
-        signal: AbortSignal.timeout(15_000), redirect: 'error',
+        signal: AbortSignal.timeout(15_000), redirect: 'manual', // never follow a redirect to somewhere else with a token attached
       });
     } catch { throw new GithubError(502, 'github_unreachable', 'GitHub could not be reached'); }
+    if ([301, 302, 307, 308].includes(res.status) || res.type === 'opaqueredirect') throw new GithubError(404, 'repo_moved', 'This repository has moved or been renamed on GitHub; use its new link');
     if (res.status === 404) throw new GithubError(404, 'repo_not_found', token ? 'Repository not found, or the token has no access to it' : 'Repository not found (if it is private, add a GitHub token first)');
     if (res.status === 401) throw new GithubError(401, 'bad_token', 'GitHub rejected the token');
     if (res.status === 403 || res.status === 429) {
@@ -53,6 +69,28 @@ export class GithubClient {
       owner: String(r.owner?.login ?? owner), name: String(r.name ?? name), defaultBranch: String(r.default_branch ?? 'main'), description: r.description ? String(r.description).slice(0, 300) : null,
       isPrivate: !!r.private, canPush: !!r.permissions?.push, language: r.language ? String(r.language) : null, htmlUrl: String(r.html_url ?? `https://github.com/${owner}/${name}`),
     };
+  }
+
+  /** The repository's file list at a ref (default branch if none): paths and sizes, minus secrets, vendored folders and lockfiles. */
+  async tree(owner: string, name: string, ref: string, token?: string | null): Promise<{ ref: string; truncated: boolean; files: { path: string; size: number }[] }> {
+    if (!OWNER.test(owner) || !NAME.test(name) || !/^[A-Za-z0-9._\/-]{1,200}$/.test(ref) || ref.includes('..')) throw new GithubError(400, 'invalid_repo', 'that is not a valid repository or branch');
+    const t = await this.get(`/repos/${owner}/${name}/git/trees/${encodeURIComponent(ref)}?recursive=1`, token);
+    const files = (Array.isArray(t.tree) ? t.tree : []).filter((e: any) => e.type === 'blob' && typeof e.path === 'string')
+      .filter((e: any) => safePath(e.path) && !SKIP_DIRS.test(e.path) && !LOCKFILES.test(e.path)).slice(0, MAX_TREE_FILES).map((e: any) => ({ path: String(e.path), size: Number(e.size ?? 0) }));
+    return { ref, truncated: !!t.truncated || files.length >= MAX_TREE_FILES, files };
+  }
+
+  /** One text file at a ref. Secrets, directories, binaries and anything over 200 KB are refused. */
+  async file(owner: string, name: string, path: string, ref: string, token?: string | null): Promise<{ path: string; size: number; text: string }> {
+    if (!OWNER.test(owner) || !NAME.test(name) || !/^[A-Za-z0-9._\/-]{1,200}$/.test(ref) || ref.includes('..')) throw new GithubError(400, 'invalid_repo', 'that is not a valid repository or branch');
+    const p = safePath(path);
+    if (!p) throw new GithubError(403, 'path_not_allowed', 'that path cannot be read');
+    const c = await this.get(`/repos/${owner}/${name}/contents/${p.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(ref)}`, token);
+    if (Array.isArray(c) || c?.type !== 'file') throw new GithubError(400, 'not_a_file', 'that path is not a file');
+    if (Number(c.size) > MAX_FILE_BYTES) throw new GithubError(413, 'file_too_large', 'that file is too large to read');
+    const buf = Buffer.from(String(c.content ?? ''), 'base64');
+    if (buf.includes(0)) throw new GithubError(415, 'binary_file', 'that file is not text');
+    return { path: p, size: buf.length, text: buf.toString('utf8') };
   }
 
   /** Everything the repo picker reads about a repository: languages, README start, the top-level tree and manifest highlights. Best effort per part. */
@@ -143,4 +181,7 @@ export class GithubService {
 
   /** Read credential for cloning in the sandbox's setup phase (docs/09 §2.5). Only ever handed to the AI service's sandbox layer, over the internal secret. */
   async cloneToken(projectId: string): Promise<string | null> { return this.token(projectId); }
+
+  tree(projectId: string, owner: string, name: string, ref: string) { return this.token(projectId).then((t) => this.client.tree(owner, name, ref, t)); }
+  file(projectId: string, owner: string, name: string, path: string, ref: string) { return this.token(projectId).then((t) => this.client.file(owner, name, path, ref, t)); }
 }
