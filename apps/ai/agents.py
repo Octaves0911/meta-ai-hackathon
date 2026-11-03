@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 import base64
 
+from repo_picker import RepoIn
 from brief import BriefIn, CtxItem, TaskIn, brief_text_for_facts, render_brief, render_context  # noqa: F401  (TaskIn/CtxItem re-exported)
 from llm import agent_model, begin_usage, chat_json, complete_json, complete_text, sanitize_label
 from files import build_pdf, markdown_to_spec
@@ -20,7 +21,7 @@ from quality import Check, self_check, unsupported_facts
 from runtrace import LimitExceeded, Trace
 
 AgentName = Literal["research", "marketing", "designer", "communication", "code"]
-ArtifactType = Literal["markdown", "image", "pdf", "video", "diff", "link", "file", "email_draft", "html", "table"]
+ArtifactType = Literal["markdown", "image", "pdf", "video", "diff", "link", "file", "email_draft", "html", "table", "verification"]
 
 MAX_DEPTH = 2          # consultation depth (PRD F8.3)
 MAX_CONSULTATIONS = 4  # per task
@@ -48,9 +49,13 @@ class Feedback(BaseModel):
 
 
 WALL_CLOCK_SECONDS = 170  # per run (docs/09 §1.6); the backend's own timeout is 180 s
+CODE_WALL_CLOCK_SECONDS = 840  # the Code agent waits for sandbox installs and test runs; the backend allows 900 s
 
 
 class RunRequest(BriefIn):
+    repos: list["RepoIn"] = Field(default_factory=list, max_length=10)  # Code agent: the project's linked GitHub repositories
+    repo_id: str | None = Field(default=None, max_length=64)           # the reviewer's choice, when the router was unsure
+    project_id: str | None = Field(default=None, max_length=64)
     feedback: Feedback | None = None
     revision: int = Field(default=0, ge=0, le=10)
     execution_id: str | None = None   # when set, progress steps are streamed to the backend
@@ -79,6 +84,8 @@ class RunResponse(BaseModel):
     consultations: list[Consultation] = Field(default_factory=list)
     confidence: float | None = None
     open_questions: list[str] = Field(default_factory=list)
+    repo_id: str | None = None          # Code agent: the repository the work targets
+    repo_choice: dict | None = None     # Code agent: several repositories fit; the reviewer must choose
     usage: dict = Field(default_factory=dict)
     steps: list[dict] = Field(default_factory=list)
 
@@ -183,8 +190,17 @@ def _mock_run(name: str, req: RunRequest, state: _State) -> RunResponse:
         return RunResponse(summary=f"Drafted {'a reply' if src else 'an email'} for “{t.title}”{rev}.",
                            notes="Replying in your existing thread." if src else "No recipient was found in your mailbox; please add one before sending.",
                            artifacts=arts, consultations=state.consultations)
+    if name == "code" and len(req.repos) >= 2 and not req.repo_id:  # several repositories: the reviewer chooses
+        return RunResponse(summary="Which repository should this change go to?", notes="More than one linked repository could be right.", artifacts=[], consultations=[], open_questions=["Which repository should this change go to?"],
+                           repo_choice={"reason": "Mock: more than one repository fits.", "candidates": [{"repo_id": r.id, "full_name": r.full_name, "score": round(0.8 - 0.1 * i, 2), "reason": "mock"} for i, r in enumerate(req.repos[:3])]})
     md = f"# {name.title()} deliverable: {t.title}{rev}\n\n## Summary\nMock {name} output for the task above.{addressed}{consult_md}\n\n## Sources\n{sources}\n"
     arts = [ArtifactOut(type="markdown", title=f"{name.title()} report" if name != "code" else "Implementation plan", content=md)]
+    if name == "code" and (req.repos or req.repo_id):
+        repo = next((r for r in req.repos if r.id == req.repo_id), req.repos[0] if req.repos else None)
+        if repo:
+            diff = ("diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1,3 +1,4 @@\n const a = 1;\n-const b = 2;\n+const b = 3;\n+const c = 4;\n module.exports = a;\n")
+            arts.append(ArtifactOut(type="diff", title=f"Change to {repo.full_name}", payload={"diff": diff, "repo": repo.full_name, "branch": repo.default_branch, "files": [{"path": "src/app.js", "status": "modified", "additions": 2, "deletions": 1}]}))
+            arts.append(ArtifactOut(type="verification", title="Verification: Not tested", payload={"status": "not_tested", "reason": "Mock mode: nothing was run.", "mode": "mock", "repo": repo.full_name, "branch": repo.default_branch, "ecosystem": "", "steps": [], "warnings": [], "seconds": 0, "cost_usd": 0, "summary": "Not tested"}))
     if name == "marketing":
         arts.append(ArtifactOut(type="table", title="Timeline", payload={"columns": ["Phase", "Start", "End", "Owner", "Deliverable"], "rows": [["Teaser", "Nov 8, 2026", "Nov 15, 2026", "Unassigned", "Mock teaser"], ["Launch", "Nov 22, 2026", "Nov 22, 2026", "Unassigned", "Mock launch"]]}))
     if name == "research":
@@ -193,6 +209,8 @@ def _mock_run(name: str, req: RunRequest, state: _State) -> RunResponse:
         for label, bg, fg in (("A", "#0f1424", "#ffffff"), ("B", "#fbfaf7", "#1c1b19")):
             html = f'<!doctype html><html><body style="margin:0;background:{bg};color:{fg};font-family:sans-serif"><div style="padding:40px"><h1>{_esc(t.title[:60])}</h1><p>Mock direction {label}</p><button style="padding:12px 20px;border:0;border-radius:10px">Get started</button></div></body></html>'
             arts.append(ArtifactOut(type="html", title=f"Mockup {label}", payload={"html": html, "direction": label, "name": f"Direction {label}"}))
+    if name == "code" and (req.repos or req.repo_id):
+        return RunResponse(summary=f"Code agent finished “{t.title}”{rev}.", notes="Generated in mock mode.", artifacts=arts, consultations=state.consultations, repo_id=req.repo_id or req.repos[0].id)
     return RunResponse(summary=f"{name.title()} agent finished “{t.title}”{rev}.", notes="Generated in mock mode.", artifacts=arts, consultations=state.consultations)
 
 
@@ -292,6 +310,10 @@ async def _real_run(name: str, req: RunRequest, state: _State, trace: Trace) -> 
         from designer import run_designer
 
         return await run_designer(req, state, trace)
+    if name == "code":
+        from codeagent import run_code
+
+        return await run_code(req, state, trace)
     model = agent_model(name)
     task = _task_block(req)
     async with trace.step("read", "Read the brief", {"lines": len(req.source_lines), "decisions": len(req.decisions), "neighbours": len(req.neighbours),
@@ -343,36 +365,19 @@ async def _real_run(name: str, req: RunRequest, state: _State, trace: Trace) -> 
                            artifacts=[ArtifactOut(type="email_draft", title="Email draft", payload=payload)], consultations=state.consultations,
                            confidence=round(conf, 2), open_questions=payload["open_questions"])
 
-    async with trace.step("draft", f"Write the {_kind(name).split(' (')[0].replace('a ', '', 1)}"):
-        md = await _draft_text(name, task, consulted, model)
-    async with trace.step("check", "Self-check against the brief") as st:
-        check = await self_check(name, task, md, model=model)
-        st["detail"]["blocking"] = check.blocking
-    if not check.passed:
-        async with trace.step("draft", "Repair the draft") as st:
-            md = await _draft_text(name, task, consulted, model, fixes=check.blocking)
-            check = await self_check(name, task, md, model=model)
-            st["detail"]["remaining"] = check.blocking
-    arts = [ArtifactOut(type="markdown", title="Implementation plan" if name == "code" else f"{name.title()} deliverable", content=md)]
-    if name == "designer":
-        async with trace.step("draft", "Sketch a concept image"):
-            svg = await complete_text("Produce ONE self-contained SVG concept sketch (viewBox 0 0 320 180, no scripts, no external links). Output only the <svg> element.",
-                                      f"{req.task.title}\n\nBrief:\n{md[:1500]}", max_tokens=2500, model=model)
-        m = re.search(r"<svg[\s\S]*</svg>", svg)
-        if m and not re.search(r"<script|on\w+\s*=|href\s*=\s*[\"']https?:", m.group(0), re.I):
-            arts.append(ArtifactOut(type="image", title="Concept sketch", payload={"mime": "image/svg+xml", "svg": m.group(0)}))
-    first = next((ln.lstrip("# ").strip() for ln in md.splitlines() if ln.strip()), req.task.title)
-    open_q = list(dict.fromkeys([*check.open_questions, *[f"Confirm {b}" for b in check.blocking]]))[:6]
-    return RunResponse(summary=first[:300], notes="", artifacts=arts, consultations=state.consultations,
-                       confidence=round(check.confidence * (0.6 if check.blocking else 1.0), 2), open_questions=open_q)
+    raise ValueError(f"no agent flow for {name}")
+
+
+def _slug(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-").lower()[:50] or "document"
 
 
 MAX_FILE_BYTES = 10 * 1024 * 1024  # per file (docs/09 §1.8)
 DECK_WORDS = re.compile(r"\b(deck|slides?|presentation|pitch|keynote|powerpoint|pptx)\b", re.I)
 
 
-def _slug(s: str) -> str:
-    return re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-").lower()[:50] or "document"
+
+
 
 
 def attach_pdfs(out: RunResponse, name: str, req: RunRequest) -> None:
@@ -469,14 +474,14 @@ async def chat_with_agent(name: str, req: ChatRequest) -> ChatResponse:
 async def _run(name: str, req: RunRequest) -> RunResponse:
     state = _State()
     usage = begin_usage()
-    trace = Trace(req.execution_id, req.revision, req.callback_url, os.environ.get("INTERNAL_SECRET", ""))
+    trace = Trace(req.execution_id, req.revision, req.callback_url, os.environ.get("INTERNAL_SECRET", ""), max_steps=16 if name == "code" else 8)
     if os.environ.get("AGENTS_MODE") == "mock":
         async with trace.step("draft", "Produce the mock deliverable"):
             out = _mock_run(name, req, state)
         out.confidence = 0.8
         out.open_questions = out.open_questions or (["Who should receive this email?"] if name == "communication" and out.artifacts[0].payload and not out.artifacts[0].payload.get("to") else [])
     else:
-        out = await asyncio.wait_for(_real_run(name, req, state, trace), timeout=WALL_CLOCK_SECONDS)
+        out = await asyncio.wait_for(_real_run(name, req, state, trace), timeout=CODE_WALL_CLOCK_SECONDS if name == "code" else WALL_CLOCK_SECONDS)
     if out.artifacts:
         attach_pdfs(out, name, req)
     out.usage, out.steps = usage, trace.steps

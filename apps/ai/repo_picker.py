@@ -31,6 +31,7 @@ SCHEMA = {
 class RepoIn(BaseModel):
     id: str = Field(max_length=64)
     full_name: str = Field(max_length=140)
+    default_branch: str = Field(default="main", max_length=200)
     description: str | None = Field(default=None, max_length=300)         # written by the project owner: most trusted signal
     github_description: str | None = Field(default=None, max_length=300)
     language: str | None = Field(default=None, max_length=40)
