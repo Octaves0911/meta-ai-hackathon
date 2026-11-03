@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronRight, Download, File as FileIcon, FileImage, FileText, Folder, FolderOpen, Lock, RefreshCw, Save, Search, Trash2, Upload } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { WorkspaceFile, WorkspaceInfo } from '@meetpilot/shared';
-import { api, storedUser } from '../lib/api';
+import { api, fetchBlob, storedUser } from '../lib/api';
 import { EmptyState, toast, useConfirm } from '../ui';
 
 interface FileDetail extends WorkspaceFile { content: string | null }
@@ -25,12 +25,6 @@ function buildTree(files: WorkspaceFile[]): Node {
   const sort = (n: Node) => { n.children.sort((a, b) => Number(b.folder) - Number(a.folder) || a.name.localeCompare(b.name)); n.children.forEach(sort); };
   sort(root);
   return root;
-}
-
-async function fetchBlob(path: string): Promise<Blob> {
-  const res = await fetch(`/api${path}`, { headers: { 'x-user': storedUser() ?? '' } });
-  if (!res.ok) throw new Error((await res.json().catch(() => null))?.error?.message ?? 'download failed');
-  return res.blob();
 }
 
 export function WorkspacePanel({ projectId }: { projectId: string }) {

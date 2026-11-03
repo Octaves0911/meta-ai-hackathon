@@ -29,6 +29,13 @@ export async function api<T>(path: string, init: RequestInit & { json?: unknown 
   return data as T;
 }
 
+/** Authenticated download of raw bytes (iframes and <a> cannot send the user header, so we fetch and hand out an object URL). */
+export async function fetchBlob(path: string): Promise<Blob> {
+  const res = await fetch(`/api${path}`, { headers: { 'x-user': storedUser() ?? '' } });
+  if (!res.ok) throw new Error((await res.json().catch(() => null))?.error?.message ?? 'download failed');
+  return res.blob();
+}
+
 export interface Session { user: User | null; setUser: (u: User | null) => void }
 export const SessionContext = createContext<Session>({ user: null, setUser: () => {} });
 export const useSession = () => useContext(SessionContext);
