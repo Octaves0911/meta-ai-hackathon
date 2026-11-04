@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RoomPeer } from '@meetpilot/shared';
+import { api } from '../lib/api';
 import { getSocket } from '../lib/socket';
 
 export interface Peer { socketId: string; userId: string; name: string; stream: MediaStream | null; state: RTCPeerConnectionState | 'new' }
 
-const RTC_CONFIG: RTCConfiguration = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }; // no TURN (known limitation)
+// STUN by default; the server adds TURN relays when they are configured (/api/ice-servers), so calls also work across strict networks.
+let RTC_CONFIG: RTCConfiguration = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+let iceLoaded: Promise<void> | null = null;
+function loadIceServers(): Promise<void> {
+  iceLoaded ??= api<{ iceServers: RTCIceServer[] }>('/ice-servers').then((r) => { if (Array.isArray(r.iceServers) && r.iceServers.length) RTC_CONFIG = { iceServers: r.iceServers }; }).catch(() => undefined);
+  return iceLoaded;
+}
 const MAX_AUTO_RETRIES = 3;
 
 /** Full-mesh WebRTC for one meeting room. The later joiner always makes the first offer. */
@@ -28,6 +35,7 @@ export function usePeerMesh(meetingId: string, username: string, enabled: boolea
 
   useEffect(() => {
     if (!enabled) return;
+    void loadIceServers();
     let disposed = false;
     const pcs = new Map<string, RTCPeerConnection>();
     const pending = new Map<string, RTCIceCandidateInit[]>();

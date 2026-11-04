@@ -26,6 +26,8 @@ import { InsightService } from './insights/service.js';
 import { createEmbedder, type Embedder } from './memory/embedder.js';
 import { registerOps } from './ops/plugin.js';
 import { aiToolRoutes } from './routes/aiTools.js';
+import { iceRoutes } from './routes/ice.js';
+import { serveWeb } from './staticWeb.js';
 import { randomUUID } from 'node:crypto';
 
 declare module 'fastify' {
@@ -94,5 +96,7 @@ export function buildApp(db: pg.Pool): FastifyInstance {
   app.register(workspaceRoutes, { prefix: '/api' });
   app.register(integrationRoutes, { prefix: '/api' });
   app.register(aiToolRoutes, { prefix: '/api' });
+  app.register(iceRoutes, { prefix: '/api' });
+  serveWeb(app); // production: the same process also serves the built web app
   return app;
 }
