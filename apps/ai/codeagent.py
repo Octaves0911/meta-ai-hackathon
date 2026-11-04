@@ -21,9 +21,11 @@ from runtrace import Trace
 import sitebundle
 from sandbox import RepoSource, SandboxError, Verification, get_backend, verify_change
 
-MAX_READ_FILES = 12
-MAX_FILE_CHARS = 30_000
-MAX_TOTAL_CHARS = 120_000
+# Muse Spark has a 1M-token window, so the agent reads many more files in one prompt than a small-window model could (about 4 characters per token).
+# Tunable: CODE_MAX_FILES, CODE_MAX_FILE_CHARS, CODE_CONTEXT_CHARS. Cost grows with the context, so these stay bounded.
+MAX_READ_FILES = int(os.environ.get("CODE_MAX_FILES", "40"))
+MAX_FILE_CHARS = int(os.environ.get("CODE_MAX_FILE_CHARS", "60000"))
+MAX_TOTAL_CHARS = int(os.environ.get("CODE_CONTEXT_CHARS", "400000"))
 MAX_TREE_LISTED = 500
 MAX_EDIT_ATTEMPTS = 3        # the model's first try plus two corrections of edits that do not apply exactly
 MAX_VERIFY_REPAIRS = 2       # corrections after a failed verification
@@ -46,9 +48,14 @@ CHANGE_SCHEMA = {
     "required": ["summary", "steps", "risks", "tests", "rollout", "changes"], "additionalProperties": False,
 }
 
+SCREENSHOT_RULES = (
+    " The reviewer attached a screenshot of the problem (an error, a stack trace or a broken page). Read it carefully, work out the likely cause from what it shows, "
+    "and fix that cause in the files; mention what the screenshot showed in `summary`."
+)
 LOCATE_RULES = (
-    "You are a senior engineer about to implement a task in an existing repository. From the task, what was said in the meeting and the repository file list, choose up to 12 files you must READ: "
-    "the files to change, plus an existing test file and any config you should imitate. Choose only paths that appear in the list. Prefer a small, focused set."
+    f"You are a senior engineer about to implement a task in an existing repository. From the task, what was said in the meeting and the repository file list, choose up to {MAX_READ_FILES} files you must READ: "
+    "the files to change, the files that call or are called by that code, an existing test file and any config you should imitate. Choose only paths that appear in the list. "
+    "Prefer files that matter to this change over padding, but do include the surrounding code so the change fits the whole picture."
 )
 CHANGE_RULES = (
     "You implement the task as a minimal, focused change to the repository, using ONLY the files shown. Output `changes`: for an existing file use action 'modify' with `edits`, each edit's `find` being an EXACT, UNIQUE snippet "
@@ -216,7 +223,7 @@ async def run_code(req: RunRequest, state: _State, trace: Trace) -> RunResponse:
             st["detail"].update({"files": len(files), "truncated": tree.get("truncated", False), "commit": commit[:10]})
         listing = "\n".join(f"{p} ({sizes[p]} bytes)" for p in sorted(files, key=lambda p: (p.count("/"), p))[:MAX_TREE_LISTED])
         async with trace.step("plan", "Decide which files to read") as st:
-            loc = await chat_json(LOCATE_RULES, f"{task}\n\nRepository {repo.full_name}:\n{_fence('index', repo.index_text)}\n\nFiles:\n{listing}", LOCATE_SCHEMA, max_tokens=500, model=model)
+            loc = await chat_json(LOCATE_RULES, f"{task}\n\nRepository {repo.full_name}:\n{_fence('index', repo.index_text)}\n\nFiles:\n{listing}", LOCATE_SCHEMA, max_tokens=500, model=model, images=req.images)
             wanted = [p for p in dict.fromkeys(str(x) for x in loc.get("files", [])) if p in sizes and sizes[p] <= MAX_FILE_CHARS * 2][:MAX_READ_FILES]
             st["detail"]["files"] = wanted
         async with trace.step("read", "Read the files") as st:
@@ -244,7 +251,7 @@ async def run_code(req: RunRequest, state: _State, trace: Trace) -> RunResponse:
     async with trace.step("draft", "Write the change and build the diff") as st:
         for attempt in range(MAX_EDIT_ATTEMPTS):
             fix = ("\n\nYour previous edits had these problems. Fix every one (copy `find` text exactly from the files above):\n- " + "\n- ".join(problems)) if problems else ""
-            plan = await chat_json(CHANGE_RULES + (IMPLEMENT_RULES if req.approved_input else ""), f"{task}{prior}\n\nRepository {repo.full_name} (branch {branch}).\n\n{render_files(originals)}{fix}", CHANGE_SCHEMA, max_tokens=4500, model=model)
+            plan = await chat_json(CHANGE_RULES + (IMPLEMENT_RULES if req.approved_input else "") + (SCREENSHOT_RULES if req.images else ""), f"{task}{prior}\n\nRepository {repo.full_name} (branch {branch}).\n\n{render_files(originals)}{fix}", CHANGE_SCHEMA, max_tokens=4500, model=model, images=req.images)
             if not plan.get("changes"):
                 changes = []
                 break
@@ -285,7 +292,7 @@ async def run_code(req: RunRequest, state: _State, trace: Trace) -> RunResponse:
             fix = (f"\n\nYour change FAILED verification in the sandbox: {verification.reason}\nThe failing step ({failing.label if failing else '?'}) printed:\n"
                    f"{_fence('sandbox output', (failing.output if failing else '')[-3000:])}\nCorrect the change. Return the complete corrected change set, with edits relative to the ORIGINAL files shown above.")
             for _ in range(MAX_EDIT_ATTEMPTS):
-                plan2 = await chat_json(CHANGE_RULES + (IMPLEMENT_RULES if req.approved_input else ""), f"{task}\n\nRepository {repo.full_name} (branch {branch}).\n\n{render_files(originals)}{fix}", CHANGE_SCHEMA, max_tokens=4500, model=model)
+                plan2 = await chat_json(CHANGE_RULES + (IMPLEMENT_RULES if req.approved_input else "") + (SCREENSHOT_RULES if req.images else ""), f"{task}\n\nRepository {repo.full_name} (branch {branch}).\n\n{render_files(originals)}{fix}", CHANGE_SCHEMA, max_tokens=4500, model=model, images=req.images)
                 try:
                     changes = build_changes(originals, plan2.get("changes") or [], set(files), modes)
                     plan = plan2

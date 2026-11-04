@@ -158,8 +158,8 @@ export type ExecutionStatus = 'routed' | 'running' | 'awaiting_review' | 'change
 export type AgentName = 'research' | 'marketing' | 'designer' | 'communication' | 'code';
 export const MAX_REVISIONS = 5;
 export type MessageKind = 'ask' | 'change' | 'clarify';
-export interface ExecutionMessage { id: string; revision: number; role: 'user' | 'agent'; kind: MessageKind; text: string; proposedChange: string | null; author: string | null; createdAt: string }
-export const ChatBody = z.object({ text: z.string().trim().min(1).max(2000) });
+export interface ExecutionMessage { id: string; revision: number; role: 'user' | 'agent'; kind: MessageKind; text: string; proposedChange: string | null; author: string | null; /** The reviewer attached a screenshot to this message. */ hasImage?: boolean; createdAt: string }
+export const ChatBody = z.object({ text: z.string().trim().min(1).max(2000), /** A screenshot as a data URL (PNG, JPEG or WebP, up to 2.5 MB); the agent can see it. */ image: z.string().max(3_500_000).optional() });
 export const RerunBody = z.object({ comment: z.string().trim().max(2000).optional() });
 export const MAX_CHAT_MESSAGES = 60;
 

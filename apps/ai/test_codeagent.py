@@ -43,6 +43,8 @@ def req(**kw):
 class RunTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.prompts: list[str] = []
+        self.systems: list[str] = []
+        self.kws: list[dict] = []
         self.ver_calls: list[str] = []
         self.patches = []
 
@@ -53,6 +55,8 @@ class RunTest(unittest.IsolatedAsyncioTestCase):
 
         async def fake_json(system, user, schema, **k):
             self.prompts.append(user)
+            self.systems.append(system)
+            self.kws.append(k)
             if schema is C.LOCATE_SCHEMA:
                 return locate
             return plans.pop(0) if len(plans) > 1 else plans[0]
@@ -275,6 +279,34 @@ class RunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kinds.count("check"), 4)
         self.assertLessEqual(len(kinds), 16)
 
+    # Muse Spark's 1M-token window lets the agent read far more of the repository in one prompt; a screenshot of an error goes to the model with the files.
+    async def test_dozens_of_files_are_read_in_one_prompt(self):
+        extra = {f"src/mod{i}.js": f"module.exports = {i};\n" for i in range(30)}
+        with mock.patch.dict(FILES, extra):
+            out = await self.go(locate={"files": ["src/add.js", "test/sanity.test.js", *extra], "why": "w"})
+        self.assertEqual(len(self.read_refs), 32)                       # all 32 requested files were read (a 12-file budget would have stopped at 12)
+        self.assertGreaterEqual(C.MAX_READ_FILES, 40)
+        self.assertIn(f"up to {C.MAX_READ_FILES} files", self.systems[0])
+        self.assertTrue(any(a.type == "diff" for a in out.artifacts))
+
+    async def test_the_budget_is_still_a_budget(self):
+        extra = {f"src/big{i}.js": "x" * 50_000 for i in range(12)}
+        with mock.patch.dict(FILES, extra), mock.patch.object(C, "MAX_TOTAL_CHARS", 120_000):
+            await self.go(locate={"files": ["src/add.js", *extra], "why": "w"})
+        change_prompt = next(p for p, sch in zip(self.prompts, [None] * len(self.prompts)) if "Repository acme/shop-api" in p)
+        self.assertLess(len(change_prompt), 135_000)                    # files past the total cap are left out, not sent
+
+    async def test_an_attached_screenshot_goes_to_the_model_with_both_the_file_choice_and_the_change(self):
+        shot = "data:image/png;base64,iVBORw0KGgo="
+        await self.go(req(images=[shot]))
+        self.assertGreaterEqual(len(self.kws), 2)
+        self.assertTrue(all(k.get("images") == [shot] for k in self.kws))                        # locate and change both see it
+        self.assertTrue(any("screenshot of the problem" in s for s in self.systems))
+        self.kws.clear(); self.systems.clear()
+        await self.go(req())
+        self.assertTrue(all(not k.get("images") for k in self.kws))
+        self.assertFalse(any("screenshot of the problem" in s for s in self.systems))
+
 
 class MockModeTest(unittest.IsolatedAsyncioTestCase):
     async def test_mock_mode_offers_a_choice_when_several_repositories_exist_and_a_diff_when_one_is_chosen(self):
@@ -292,6 +324,7 @@ class MockModeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("diff", [a.type for a in done.artifacts])
         self.assertIn("verification", [a.type for a in one.artifacts])
         self.assertNotIn("diff", [a.type for a in none.artifacts])
+
 
 
 DESIGN = "# Design brief\n**Headline:** Pro for teams\n\n**Call to action:** Get Pro\n"

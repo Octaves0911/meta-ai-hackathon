@@ -5,6 +5,7 @@ export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 export const MAX_FILES_PER_RUN = 8;
 const PDF_MAGIC = Buffer.from('%PDF-');
 const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+export const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
 export interface PreparedFile { filename: string; mime: string; size: number; sha256: string; data: Buffer }
 
@@ -15,7 +16,7 @@ export function safeFilename(name: unknown, ext: string): string {
   return `${stem || 'document'}.${ext}`;
 }
 
-/** Returns the decoded file, or throws with a reason. PDFs, and zip bundles (a static site from the Code agent), are accepted; the check is on the bytes, not the claimed type. */
+/** Returns the decoded file, or throws with a reason. PDFs, zip bundles (a static site from the Code agent) and PowerPoint decks (a zip container too) are accepted; the check is on the bytes, not the claimed type. */
 export function prepareFile(payload: Record<string, any>): PreparedFile {
   const b64 = payload.file_b64;
   if (typeof b64 !== 'string' || !b64) throw new Error('no file data');
@@ -23,7 +24,7 @@ export function prepareFile(payload: Record<string, any>): PreparedFile {
   const data = Buffer.from(b64, 'base64');
   if (data.length === 0) throw new Error('empty file');
   if (data.length > MAX_FILE_BYTES) throw new Error('file is larger than 10 MB');
-  const zip = payload.mime === 'application/zip';
-  if (zip ? !data.subarray(0, 4).equals(ZIP_MAGIC) : !data.subarray(0, 5).equals(PDF_MAGIC)) throw new Error(zip ? 'not a zip file' : 'not a PDF');
-  return { filename: safeFilename(payload.filename, zip ? 'zip' : 'pdf'), mime: zip ? 'application/zip' : 'application/pdf', size: data.length, sha256: createHash('sha256').update(data).digest('hex'), data };
+  const zip = payload.mime === 'application/zip', pptx = payload.mime === PPTX_MIME;
+  if (zip || pptx ? !data.subarray(0, 4).equals(ZIP_MAGIC) : !data.subarray(0, 5).equals(PDF_MAGIC)) throw new Error(zip ? 'not a zip file' : pptx ? 'not a PowerPoint file' : 'not a PDF');
+  return { filename: safeFilename(payload.filename, zip ? 'zip' : pptx ? 'pptx' : 'pdf'), mime: zip ? 'application/zip' : pptx ? PPTX_MIME : 'application/pdf', size: data.length, sha256: createHash('sha256').update(data).digest('hex'), data };
 }

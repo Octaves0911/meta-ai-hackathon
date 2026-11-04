@@ -43,3 +43,12 @@ test('a zip bundle is accepted by its bytes and never mistaken for a PDF', () =>
   assert.throws(() => prepareFile({ file_b64: Buffer.from('%PDF-1.4 x').toString('base64'), filename: 'x.zip', mime: 'application/zip' }), /not a zip/);
   assert.throws(() => prepareFile({ file_b64: zip.toString('base64'), filename: 'x.pdf', mime: 'application/pdf' }), /not a PDF/);
 });
+
+test('a PowerPoint deck is accepted by its bytes with the right name and type', async () => {
+  const { PPTX_MIME } = await import('../src/agents/files.js');
+  const pk = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from('deck')]);
+  const f = prepareFile({ file_b64: pk.toString('base64'), filename: '../Launch deck.pdf', mime: PPTX_MIME });
+  assert.equal(f.mime, PPTX_MIME);
+  assert.equal(f.filename, 'Launch deck.pptx');
+  assert.throws(() => prepareFile({ file_b64: Buffer.from('%PDF-1.4 x').toString('base64'), filename: 'x.pptx', mime: PPTX_MIME }), /not a PowerPoint/);
+});

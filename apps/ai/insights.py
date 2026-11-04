@@ -1,11 +1,13 @@
 """Extractor, judge and answerer endpoints (docs/04). Output is schema-validated before the backend acts on it."""
 import json
+import os
 from typing import Literal
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from llm import complete_json, sanitize_label, set_cache_key
+from llm import chat_with_tools, complete_json, sanitize_label, set_cache_key, _extract_json
 
 EventType = Literal["task", "decision", "deadline", "question", "blocker", "info"]
 Kind = Literal["conflict", "update", "repeat", "answer", "reminder", "context", "no_record", "external"]
@@ -82,10 +84,23 @@ class JudgeResponse(BaseModel):
 class AnswerRequest(BaseModel):
     question: str = Field(max_length=1000)
     context: list[Candidate] = Field(max_length=12)
+    tool_url: str | None = Field(default=None, max_length=300)   # backend endpoint that runs the assistant's lookup tools (project data only)
+    project_id: str | None = Field(default=None, max_length=64)
+
+
+ASSISTANT_TOOLS = [
+    {"type": "function", "function": {"name": "search_project", "description": "Search what the team said in earlier meetings and what is saved in the project's memory. Use for questions about past discussions.",
+                                      "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "What to look for, in plain words."}}, "required": ["query"]}}},
+    {"type": "function", "function": {"name": "list_decisions", "description": "The project's current decisions (with what each one replaced). Use for 'what did we decide' questions.",
+                                      "parameters": {"type": "object", "properties": {"topic": {"type": "string", "description": "Optional word to filter by, such as 'launch date'."}}}}},
+    {"type": "function", "function": {"name": "list_tasks", "description": "The project's tasks with owner, due date and status. Use for 'who owns' and 'what is open' questions.",
+                                      "parameters": {"type": "object", "properties": {"status": {"type": "string", "enum": ["open", "done", "all"]}}}}},
+]
 
 
 class AnswerResponse(BaseModel):
     answer: str
+    tools_used: list[str] = Field(default_factory=list)
     used_ids: list[str]
 
 
@@ -162,9 +177,29 @@ def build_router(require_secret) -> APIRouter:
             for c in req.context
         )
         set_cache_key('insights', 'answer')  # the instructions are the same for every call, so the prefix is shared
-        data = await complete_json(system, f"Question: {req.question}\n\nSources:\n{srcs or '(none)'}", max_tokens=700)
+        tools_used: list[str] = []
+        if req.tool_url and req.project_id:
+            # Function calling: besides the sources already retrieved, the assistant can look things up itself (decisions, tasks, memory).
+            async def run_tool(name: str, args: dict):
+                async with httpx.AsyncClient(timeout=15) as client:
+                    res = await client.post(req.tool_url, json={"project_id": req.project_id, "tool": name, "args": args}, headers={"x-internal-secret": os.environ.get("INTERNAL_SECRET", "")})
+                    res.raise_for_status()
+                    return res.json()
+
+            text, trace = await chat_with_tools(
+                "You are the AI assistant in a live team meeting. Answer the question using the provided sources and, when they are not enough, the lookup tools "
+                "(search_project, list_decisions, list_tasks). Use only what the sources and tool results contain; never guess. Be concise (at most 3 sentences). Say where it came from in plain words (\"the project's task list\", \"the decisions\", \"the meeting on Nov 4\"), never the names of the tools. "
+                'If nothing contains the answer, say so. Reply with a JSON object {"answer": string, "used_ids": [ids of the provided sources you used]} and nothing else.',
+                f"Question: {req.question}\n\nSources:\n{srcs or '(none)'}", ASSISTANT_TOOLS, run_tool, model=None)
+            tools_used = list(dict.fromkeys(t["name"] for t in trace if t["ok"]))
+            try:
+                data = _extract_json(text)
+            except ValueError:
+                data = {"answer": text, "used_ids": []}
+        else:
+            data = await complete_json(system, f"Question: {req.question}\n\nSources:\n{srcs or '(none)'}", max_tokens=700)
         try:
-            out = AnswerResponse(answer=str(data["answer"])[:1200], used_ids=[str(i) for i in data.get("used_ids", [])])
+            out = AnswerResponse(answer=str(data["answer"])[:1200], used_ids=[str(i) for i in data.get("used_ids", [])], tools_used=tools_used)
         except (KeyError, ValidationError) as e:
             raise HTTPException(status_code=502, detail=f"answer output invalid: {e}") from e
         out.used_ids = [i for i in out.used_ids if i in {c.id for c in req.context}]

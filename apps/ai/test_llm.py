@@ -210,5 +210,174 @@ class AnnotationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["annotations"], [])
 
 
+import json as _json
+
+PNG = "data:image/png;base64,iVBORw0KGgo="
+
+
+class VisionTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.patch = mock.patch.dict(os.environ, {"LLM_API_KEY": "k-test"}, clear=False)
+        self.patch.start()
+        for n in ("LLM_MODEL", "LLM_API_URL", "MODEL_API_KEY"):
+            os.environ.pop(n, None)
+
+    def tearDown(self):
+        self.patch.stop()
+
+    def test_only_small_real_image_data_urls_are_sent_and_at_most_four(self):
+        self.assertEqual(llm.user_content("hi", None), "hi")
+        self.assertEqual(llm.user_content("hi", ["https://evil.example/a.png", "data:text/html;base64,AAAA", "javascript:alert(1)", "x" * 10]), "hi")
+        parts = llm.user_content("look", [PNG] * 6)
+        self.assertEqual(parts[0], {"type": "text", "text": "look"})
+        self.assertEqual(len(parts), 1 + llm.MAX_IMAGES)
+        self.assertEqual(parts[1], {"type": "image_url", "image_url": {"url": PNG}})
+        self.assertEqual(llm.user_content("big", ["data:image/png;base64," + "A" * 4_000_000]), "big")
+
+    async def test_images_reach_the_model_as_content_parts(self):
+        seen = {}
+
+        def handler(req):
+            seen["body"] = _json.loads(req.content)
+            return ok('{"a": 1}')
+
+        with stub(handler):
+            await llm.chat_json("s", "what is wrong?", {"type": "object"}, images=[PNG])
+        content = seen["body"]["messages"][1]["content"]
+        self.assertEqual([p["type"] for p in content], ["text", "image_url"])
+
+
+def sse(*chunks, usage=None):
+    lines = [f"data: {_json.dumps({'choices': [{'delta': {'content': c}}]})}" for c in chunks]
+    lines.append(f"data: {_json.dumps({'choices': [{'delta': {'content': None}, 'finish_reason': 'stop'}], 'usage': usage})}" if usage else 'data: {"choices": []}')
+    lines.append("data: [DONE]")
+    return httpx.Response(200, content=("\n\n".join(lines) + "\n\n").encode(), headers={"content-type": "text/event-stream"})
+
+
+class StreamingTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.patch = mock.patch.dict(os.environ, {"LLM_API_KEY": "k-test"}, clear=False)
+        self.patch.start()
+        for n in ("LLM_MODEL", "LLM_API_URL", "MODEL_API_KEY"):
+            os.environ.pop(n, None)
+
+    def tearDown(self):
+        self.patch.stop()
+
+    def test_the_field_streamer_decodes_escapes_across_any_chunk_boundary(self):
+        doc = '{"kind":"ask","reply":"Say \\"hi\\"\\nthen \\u00e9\\u4e2d done","proposed_change":""}'
+        for size in (1, 2, 3, 5, 7, 100):
+            f = llm.FieldStreamer("reply")
+            got = "".join(f.feed(doc[i:i + size]) for i in range(0, len(doc), size))
+            self.assertEqual(got, 'Say "hi"\nthen é中 done', size)
+            self.assertTrue(f.done)
+        f = llm.FieldStreamer("reply")
+        self.assertEqual(f.feed('{"kind":"ask","proposed_change":"x"}'), "")     # no such field: nothing is emitted
+
+    async def test_deltas_arrive_before_the_answer_is_complete_and_usage_is_counted(self):
+        usage = llm.begin_usage()
+        seen = {}
+
+        def handler(req):
+            seen["body"] = _json.loads(req.content)
+            return sse('{"kind":"ask","re', 'ply":"Hel', 'lo wor', 'ld","proposed_change":""}', usage={"prompt_tokens": 100, "completion_tokens": 20, "prompt_tokens_details": {"cached_tokens": 64}})
+
+        events = []
+        with stub(handler):
+            async for ev in llm.stream_chat_json("s", "u", {"type": "object"}, "reply"):
+                events.append(ev)
+        self.assertTrue(seen["body"]["stream"])
+        self.assertEqual(seen["body"]["stream_options"], {"include_usage": True})
+        deltas = [v for k, v in events if k == "delta"]
+        self.assertGreaterEqual(len(deltas), 2)                       # more than one piece, so the UI really streams
+        self.assertEqual("".join(deltas), "Hello world")
+        self.assertEqual(events[-1], ("done", {"kind": "ask", "reply": "Hello world", "proposed_change": ""}))
+        self.assertEqual((usage["prompt_tokens"], usage["completion_tokens"], usage["cached_tokens"]), (100, 20, 64))
+
+    async def test_provider_errors_and_broken_json_become_502s(self):
+        with stub(lambda req: httpx.Response(500, text="no")):
+            with self.assertRaises(HTTPException) as c:
+                async for _ in llm.stream_chat_json("s", "u", {}, "reply"):
+                    pass
+        self.assertEqual(c.exception.status_code, 502)
+        with stub(lambda req: sse("not json at all")):
+            with self.assertRaises(HTTPException) as c:
+                async for _ in llm.stream_chat_json("s", "u", {}, "reply"):
+                    pass
+        self.assertEqual(c.exception.status_code, 502)
+
+
+class ToolCallingTest(unittest.IsolatedAsyncioTestCase):
+    TOOLS = [{"type": "function", "function": {"name": "list_tasks", "description": "d", "parameters": {"type": "object", "properties": {}}}}]
+
+    def setUp(self):
+        self.patch = mock.patch.dict(os.environ, {"LLM_API_KEY": "k-test"}, clear=False)
+        self.patch.start()
+        for n in ("LLM_MODEL", "LLM_API_URL", "MODEL_API_KEY"):
+            os.environ.pop(n, None)
+        self.sleep = mock.patch.object(llm.asyncio, "sleep", mock.AsyncMock())
+        self.sleep.start()
+
+    def tearDown(self):
+        self.sleep.stop()
+        self.patch.stop()
+
+    @staticmethod
+    def wants(name, args, cid="call_1"):
+        return httpx.Response(200, json={"choices": [{"finish_reason": "tool_calls", "message": {"role": "assistant", "content": None, "tool_calls": [{"id": cid, "type": "function", "function": {"name": name, "arguments": args}}]}}]})
+
+    async def test_the_tool_result_goes_back_with_the_assistant_turn_and_the_model_answers(self):
+        bodies, ran = [], []
+
+        def handler(req):
+            bodies.append(_json.loads(req.content))
+            return self.wants("list_tasks", "{}") if len(bodies) == 1 else ok("Sam owns it.")
+
+        async def run_tool(name, args):
+            ran.append((name, args))
+            return [{"title": "Research pricing", "owner": "sam"}]
+
+        with stub(handler):
+            text, trace = await llm.chat_with_tools("s", "who owns research?", self.TOOLS, run_tool)
+        self.assertEqual(text, "Sam owns it.")
+        self.assertEqual(ran, [("list_tasks", {})])
+        self.assertEqual(trace, [{"name": "list_tasks", "args": {}, "ok": True}])
+        roles = [m["role"] for m in bodies[1]["messages"]]
+        self.assertEqual(roles, ["system", "user", "assistant", "tool"])             # the assistant tool_calls turn is replayed before the result
+        self.assertEqual(bodies[1]["messages"][3]["tool_call_id"], "call_1")
+        self.assertIn("Research pricing", bodies[1]["messages"][3]["content"])
+        self.assertIn("tools", bodies[0])
+
+    async def test_unknown_tools_bad_arguments_and_failing_tools_are_reported_not_run(self):
+        calls = iter([self.wants("drop_database", "{}"), self.wants("list_tasks", "not json", "c2"), self.wants("list_tasks", "{}", "c3"), ok("done")])
+        ran = []
+
+        async def run_tool(name, args):
+            ran.append(name)
+            raise RuntimeError("backend down")
+
+        with stub(lambda req: next(calls)):
+            text, trace = await llm.chat_with_tools("s", "q", self.TOOLS, run_tool)
+        self.assertEqual(text, "done")
+        self.assertEqual(ran, ["list_tasks"])                                          # the unknown tool and the bad JSON never executed
+        self.assertEqual([t["ok"] for t in trace], [False, False, False])
+
+    async def test_a_model_that_never_stops_asking_is_cut_off(self):
+        seen = []
+
+        def handler(req):
+            b = _json.loads(req.content)
+            seen.append("tools" in b)
+            return self.wants("list_tasks", "{}") if "tools" in b else ok("final")
+
+        async def run_tool(name, args):
+            return []
+
+        with stub(handler):
+            text, _ = await llm.chat_with_tools("s", "q", self.TOOLS, run_tool, max_rounds=2)
+        self.assertEqual(text, "final")
+        self.assertEqual(seen, [True, True, False])                                    # the last round has no tools, so it must answer
+
+
 if __name__ == "__main__":
     unittest.main()

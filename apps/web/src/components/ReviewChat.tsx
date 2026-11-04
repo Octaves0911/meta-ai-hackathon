@@ -1,10 +1,25 @@
-import { Bot, GitCompare, Send, User } from 'lucide-react';
+import { Bot, GitCompare, ImagePlus, Send, User, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Events, MAX_CHAT_MESSAGES, MAX_REVISIONS, lineDiff, type ExecutionDetail, type ExecutionMessage } from '@meetpilot/shared';
-import { api, useSession } from '../lib/api';
+import { api, fetchBlob, streamNdjson, useSession } from '../lib/api';
 import { getSocket } from '../lib/socket';
 import { AGENT_LABEL } from '../routes/Reviews';
 import { toast } from '../ui';
+
+const MAX_IMAGE = 2_500_000;
+const readDataUrl = (f: File) => new Promise<string>((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result)); r.onerror = () => reject(new Error('could not read the image')); r.readAsDataURL(f); });
+
+/** A screenshot attached to a chat message: fetched with the user's identity, shown as a thumbnail that opens full size. */
+function ChatImage({ executionId, messageId }: { executionId: string; messageId: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let gone = false, made = '';
+    fetchBlob(`/executions/${executionId}/messages/${messageId}/image`).then((b) => { if (!gone) { made = URL.createObjectURL(b); setUrl(made); } }).catch(() => undefined);
+    return () => { gone = true; if (made) URL.revokeObjectURL(made); };
+  }, [executionId, messageId]);
+  if (!url) return <div className="faint" style={{ fontSize: 12, marginTop: 6 }}>Loading screenshot…</div>;
+  return <a href={url} target="_blank" rel="noreferrer noopener"><img src={url} alt="Screenshot attached to this message" style={{ marginTop: 6, maxWidth: 260, maxHeight: 160, borderRadius: 8, border: '1px solid var(--border)', display: 'block' }} /></a>;
+}
 
 const KIND_LABEL: Record<string, string> = { ask: 'Answer', change: 'Planned change', clarify: 'Question for you' };
 
@@ -16,6 +31,9 @@ export function ReviewChat({ d, onChanged }: { d: ExecutionDetail; onChanged: ()
   const [sending, setSending] = useState(false);
   const [rerunning, setRerunning] = useState(false);
   const [error, setError] = useState('');
+  const [image, setImage] = useState<string | null>(null);
+  const [streaming, setStreaming] = useState<string | null>(null);   // the agent's reply while it is still being written
+  const fileRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(() => api<ExecutionMessage[]>(`/executions/${d.id}/messages`).then(setMessages).catch(() => undefined), [d.id]);
@@ -26,7 +44,7 @@ export function ReviewChat({ d, onChanged }: { d: ExecutionDetail; onChanged: ()
     s.on(Events.executionMessage, load);
     return () => { s.off(Events.executionMessage, load); };
   }, [user, load]);
-  useEffect(() => { endRef.current?.scrollIntoView({ block: 'nearest' }); }, [messages.length]);
+  useEffect(() => { endRef.current?.scrollIntoView({ block: 'nearest' }); }, [messages.length, streaming]);
 
   if (!d.agent) return null;
   const agent = AGENT_LABEL[d.agent] ?? d.agent;
@@ -35,12 +53,27 @@ export function ReviewChat({ d, onChanged }: { d: ExecutionDetail; onChanged: ()
   const revisionsLeft = MAX_REVISIONS - d.revision;
   if (!open && messages.length === 0) return null;
 
+  const attach = async (f: File | null | undefined) => {
+    if (!f) return;
+    if (!/^image\/(png|jpeg|webp)$/.test(f.type)) { setError('Attach a PNG, JPEG or WebP screenshot.'); return; }
+    if (f.size > MAX_IMAGE) { setError('That screenshot is larger than 2.5 MB.'); return; }
+    setError('');
+    try { setImage(await readDataUrl(f)); } catch (e) { setError((e as Error).message); }
+  };
   const send = async () => {
     const t = text.trim();
     if (!t || sending) return;
-    setSending(true); setError('');
-    try { const added = await api<ExecutionMessage[]>(`/executions/${d.id}/messages`, { method: 'POST', json: { text: t } }); setMessages((m) => [...m, ...added]); setText(''); }
-    catch (e) { setError((e as Error).message); } finally { setSending(false); }
+    setSending(true); setError(''); setStreaming('');
+    try {
+      // Streamed: the reply appears word by word; when it is done the saved messages replace the draft.
+      let finished = false;
+      await streamNdjson<{ t: string; text?: string; message?: string; messages?: ExecutionMessage[] }>(`/executions/${d.id}/messages/stream`, { text: t, ...(image ? { image } : {}) }, (line) => {
+        if (line.t === 'delta') setStreaming((s) => (s ?? '') + (line.text ?? ''));
+        else if (line.t === 'done' && line.messages) { finished = true; setMessages((m) => [...m, ...line.messages!]); setText(''); setImage(null); }
+        else if (line.t === 'error') setError(line.message ?? 'The agent could not answer right now.');
+      });
+      if (!finished) void load();
+    } catch (e) { setError((e as Error).message); } finally { setSending(false); setStreaming(null); }
   };
   const rerun = async () => {
     setRerunning(true); setError('');
@@ -60,18 +93,38 @@ export function ReviewChat({ d, onChanged }: { d: ExecutionDetail; onChanged: ()
             <div style={{ maxWidth: '82%', background: m.role === 'user' ? 'var(--accent-soft)' : 'var(--surface-3)', borderRadius: 12, padding: '8px 12px' }}>
               {m.role === 'agent' && <div className="faint" style={{ fontSize: 12, fontWeight: 600 }}>{KIND_LABEL[m.kind] ?? m.kind}{m.revision !== d.revision ? ` · revision ${m.revision}` : ''}</div>}
               <div style={{ whiteSpace: 'pre-wrap' }}>{m.text}</div>
+              {m.hasImage && <ChatImage executionId={d.id} messageId={m.id} />}
               {m.proposedChange && <div style={{ marginTop: 6, fontSize: 13 }}><strong>Will change:</strong> {m.proposedChange}</div>}
             </div>
           </div>
         ))}
-        {sending && <div className="faint row" style={{ gap: 8 }}><span className="spinner" /> {agent} is thinking…</div>}
+        {sending && streaming === '' && <div className="faint row" style={{ gap: 8 }}><span className="spinner" /> {agent} is thinking…</div>}
+        {sending && !!streaming && (
+          <div className="row" style={{ gap: 10, alignItems: 'flex-start' }} aria-live="off">
+            <span className="avatar sm" style={{ background: 'var(--ai)' }}><Bot size={14} /></span>
+            <div style={{ maxWidth: '82%', background: 'var(--surface-3)', borderRadius: 12, padding: '8px 12px' }}>
+              <div className="faint" style={{ fontSize: 12, fontWeight: 600 }}>{agent} is writing…</div>
+              <div style={{ whiteSpace: 'pre-wrap' }}>{streaming}<span className="caret" aria-hidden>▍</span></div>
+            </div>
+          </div>
+        )}
         <div ref={endRef} />
       </div>
       {open && (
         <>
-          <div className="row" style={{ gap: 8, marginTop: 12, alignItems: 'flex-end' }}>
-            <textarea rows={2} style={{ flex: 1 }} value={text} onChange={(e) => setText(e.target.value)} maxLength={2000} aria-label="Message to the agent" placeholder="Ask a question or describe a change…"
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }} />
+          {image && (
+            <div className="row" style={{ gap: 8, marginTop: 12, alignItems: 'center' }}>
+              <img src={image} alt="Screenshot to send" style={{ maxHeight: 64, maxWidth: 120, borderRadius: 6, border: '1px solid var(--border)' }} />
+              <span className="faint" style={{ fontSize: 13 }}>The agent will look at this screenshot.</span>
+              <button className="ghost icon" onClick={() => setImage(null)} aria-label="Remove the screenshot" title="Remove the screenshot"><X size={14} /></button>
+            </div>
+          )}
+          <div className="row" style={{ gap: 8, marginTop: image ? 8 : 12, alignItems: 'flex-end' }}>
+            <textarea rows={2} style={{ flex: 1 }} value={text} onChange={(e) => setText(e.target.value)} maxLength={2000} aria-label="Message to the agent" placeholder="Ask a question, describe a change, or paste a screenshot…"
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
+              onPaste={(e) => { const f = Array.from(e.clipboardData.files).find((x) => x.type.startsWith('image/')); if (f) { e.preventDefault(); void attach(f); } }} />
+            <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => { void attach(e.target.files?.[0]); e.target.value = ''; }} />
+            <button className="ghost icon" onClick={() => fileRef.current?.click()} aria-label="Attach a screenshot" title="Attach a screenshot" disabled={sending}><ImagePlus size={17} /></button>
             <button disabled={sending || !text.trim() || messages.length >= MAX_CHAT_MESSAGES} onClick={send}><Send size={15} /> Send</button>
           </div>
           <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', marginTop: 10 }}>

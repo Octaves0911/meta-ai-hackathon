@@ -21,6 +21,7 @@ interface MeetingRow { id: string; project_id: string; owner_id: string; ai_assi
 
 const NO_ANSWER = "I couldn't find anything about that in this project's memory.";
 const isReal = () => (process.env.EMBEDDING_PROVIDER ?? 'fake') === 'real';
+const TOOL_LABEL: Record<string, string> = { search_project: 'Looked up project memory', list_decisions: 'Looked up decisions', list_tasks: 'Looked up tasks' };
 const thresholds = () => (isReal() ? { answer: 0.75, reminder: 0.6 } : { answer: 0.25, reminder: 0.25 });
 const hash = (s: string) => createHash('md5').update(s).digest('hex').slice(0, 16);
 
@@ -488,13 +489,16 @@ export class InsightService {
       const query = question.replace(/^@ai\s*/i, '').trim();
       const pkg = await buildContext(this.db, this.app.embedder, { projectId: meeting.project_id, viewerId: asker.id, query, minScore: undefined });
       const cands = await this.packageToCandidates(pkg);
-      const llm = cands.length ? await this.llm.answer(query, cands) : undefined;
+      // Function calling: the model can look up decisions, tasks and project memory itself, even when retrieval found nothing.
+      const tools = { url: `${process.env.BACKEND_INTERNAL_URL ?? `http://127.0.0.1:${process.env.BACKEND_PORT ?? 4000}`}/api/internal/ai-tools`, projectId: meeting.project_id };
+      const llm = await this.llm.answer(query, cands, tools);
       const res = llm ?? answerRules(cands);
       const used = res?.used ?? [];
+      const toolsUsed = llm?.toolsUsed ?? [];
       const privateUsed = used.some((c) => c.private);
       const body = res && res.answer.trim() ? res.answer : NO_ANSWER;
       const insight = await this.insertInsight(meeting, {
-        kind: 'answer', score: 1, title: 'Answer', sourceLabel: used.length ? [...new Set(used.map((c) => c.label))].join(' · ') : 'Project memory',
+        kind: 'answer', score: 1, title: 'Answer', sourceLabel: [...(used.length ? [...new Set(used.map((c) => c.label))] : toolsUsed.length ? [] : ['Project memory']), ...toolsUsed.map((t) => TOOL_LABEL[t] ?? t)].join(' · '),
         sourceUrl: used.find((c) => c.url)?.url ?? null, topicKey: `ask:${hash(query)}`, body, quote: query,
       }, 'interrupt', privateUsed ? asker.id : null);
       if (privateUsed) await this.emitInsight(meeting.id, insight.id); // visible only to the asker

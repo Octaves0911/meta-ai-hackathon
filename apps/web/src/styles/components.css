@@ -148,3 +148,8 @@ button:not(:disabled):active { transform: scale(0.97); }
 .card, .project-card, .meeting-card { transition: transform 0.25s var(--ease), box-shadow 0.25s; }
 a > .card:hover, .card.hoverable:hover, .project-card:hover, .meeting-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
 @media (prefers-reduced-motion: reduce) { .page, main.content, .app-main > *, button, .card { animation: none; transition: none; } }
+
+/* streamed agent reply: a quiet blinking caret while words are still arriving */
+.caret { display: inline-block; margin-left: 1px; opacity: 0.7; animation: caret-blink 1s steps(2) infinite; }
+@keyframes caret-blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .caret { animation: none; } }

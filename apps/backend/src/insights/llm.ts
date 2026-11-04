@@ -51,11 +51,13 @@ export class LlmClient {
     };
   }
 
-  async answer(question: string, ctx: Candidate[]): Promise<{ answer: string; used: Candidate[] } | undefined> {
-    const r = await this.post<{ answer: string; used_ids: string[] }>('/answer', {
+  /** With `tools`, the model may also look things up itself (function calling): it calls back into the backend's lookup endpoint. */
+  async answer(question: string, ctx: Candidate[], tools?: { url: string; projectId: string }): Promise<{ answer: string; used: Candidate[]; toolsUsed: string[] } | undefined> {
+    const r = await this.post<{ answer: string; used_ids: string[]; tools_used?: string[] }>('/answer', {
       question, context: ctx.map((c) => ({ id: c.id, label: c.label, text: c.text.slice(0, 600), score: c.score, source_type: c.sourceType })),
+      ...(tools ? { tool_url: tools.url, project_id: tools.projectId } : {}),
     });
-    return r && { answer: r.answer, used: ctx.filter((c) => r.used_ids.includes(c.id)) };
+    return r && { answer: r.answer, used: ctx.filter((c) => r.used_ids.includes(c.id)), toolsUsed: r.tools_used ?? [] };
   }
 }
 

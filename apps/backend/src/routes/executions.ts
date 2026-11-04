@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { parseChatImage, toDataUrl } from '../agents/images.js';
 import { ChatBody, ChooseRepoBody, EmailDraftBody, HandoffBody, PrBody, type PipelineStage, type PrState, type EmailAttachments, MAX_CHAT_MESSAGES, MAX_REVISIONS, RerunBody, ReviewBody, RunWithBody, SendEmailBody, type ExecutionDetail, type ExecutionMessage, type ExecutionSummary, type ExecutionUsage, type ReviewCounts } from '@meetpilot/shared';
 import { connector } from '../services/connector.js';
 import { requireUser, type AuthUser } from '../app.js';
@@ -336,8 +337,8 @@ export async function executionRoutes(app: FastifyInstance) {
   });
 
   // ---- live chat with the agent while reviewing (docs/09 §1.11)
-  const toMessage = (r: any): ExecutionMessage => ({ id: r.id, revision: r.revision, role: r.role, kind: r.kind, text: r.text, proposedChange: r.proposed_change, author: r.username ?? null, createdAt: r.created_at });
-  const MESSAGES = `select m.id, m.revision, m.role, m.kind, m.text, m.proposed_change, m.created_at, u.username from execution_messages m left join users u on u.id = m.author_id`;
+  const toMessage = (r: any): ExecutionMessage => ({ id: r.id, revision: r.revision, role: r.role, kind: r.kind, text: r.text, proposedChange: r.proposed_change, author: r.username ?? null, hasImage: !!r.has_image, createdAt: r.created_at });
+  const MESSAGES = `select m.id, m.revision, m.role, m.kind, m.text, m.proposed_change, m.created_at, (m.image is not null) as has_image, u.username from execution_messages m left join users u on u.id = m.author_id`;
 
   app.get<{ Params: { id: string } }>('/executions/:id/messages', async (req) => {
     const me = await requireUser(app, req);
@@ -346,25 +347,30 @@ export async function executionRoutes(app: FastifyInstance) {
     return rows.map(toMessage);
   });
 
-  /** One turn: the reviewer says something, the agent answers (question), plans a change, or asks back. Nothing is changed until Apply & rerun. */
-  app.post<{ Params: { id: string } }>('/executions/:id/messages', async (req, reply) => {
-    const me = await requireUser(app, req);
-    const { text } = ChatBody.parse(req.body);
+  /** Checks shared by the plain and the streamed chat turn: who may talk, when, how much, and the optional screenshot. */
+  async function prepareTurn(req: { params: { id: string }; body: unknown; headers: Record<string, unknown> }) {
+    const me = await requireUser(app, req as any);
+    const body = ChatBody.parse(req.body);
     const e = await load(req.params.id, me);
     if (e.reviewer_id !== me.id) throw new HttpError(403, 'forbidden', 'only the reviewer can talk to the agent');
     if (e.status !== 'awaiting_review' || !e.agent) throw new HttpError(409, 'not_reviewable', 'the agent can only be asked while the work is waiting for your review');
+    const image = body.image ? parseChatImage(body.image) : null;
     const { rows: cnt } = await app.db.query('select count(*)::int n from execution_messages where execution_id = $1', [e.id]);
     if (cnt[0].n >= MAX_CHAT_MESSAGES) throw new HttpError(429, 'chat_limit', 'this conversation is full; apply the changes or approve');
     if (await app.agents.overCap(e.project_id)) throw new HttpError(429, 'spend_cap', 'the daily agent spend cap for this project has been reached');
     const { rows: hist } = await app.db.query('select role, text from execution_messages where execution_id = $1 order by created_at desc, role asc limit 12', [e.id]);
-    let out;
-    try { out = await app.agents.chat({ ...e, task_id: e.task_id, title: e.task_title, due: e.due, assignee: e.assignee_name, description: e.task_description }, text, hist.reverse()); }
-    catch (err) { app.log.warn({ err: (err as Error).message }, 'agent chat failed'); throw new HttpError(502, 'agent_unavailable', 'the agent could not answer right now; try again'); }
+    const exec = { ...e, task_id: e.task_id, title: e.task_title, due: e.due, assignee: e.assignee_name, description: e.task_description };
+    return { me, e, exec, text: body.text, image, history: hist.reverse() as { role: string; text: string }[] };
+  }
+
+  async function saveTurn(t: Awaited<ReturnType<typeof prepareTurn>>, out: { kind: string; reply: string; proposed_change?: string; usage?: { cost_usd?: number } }) {
+    const { e, me, text, image } = t;
     const c = await app.db.connect();
     let inserted: any[];
     try {
       await c.query('begin');
-      const u = await c.query('insert into execution_messages(execution_id, revision, role, kind, text, author_id) values ($1,$2,$3,$4,$5,$6) returning id', [e.id, e.revision, 'user', out.kind, text, me.id]);
+      const u = await c.query('insert into execution_messages(execution_id, revision, role, kind, text, author_id, image, image_mime) values ($1,$2,$3,$4,$5,$6,$7,$8) returning id',
+        [e.id, e.revision, 'user', out.kind, text, me.id, image?.data ?? null, image?.mime ?? null]);
       const a = await c.query('insert into execution_messages(execution_id, revision, role, kind, text, proposed_change, usage) values ($1,$2,$3,$4,$5,$6,$7) returning id',
         [e.id, e.revision, 'agent', out.kind, out.reply, out.proposed_change || null, JSON.stringify(out.usage ?? {})]);
       await c.query('commit');
@@ -372,9 +378,60 @@ export async function executionRoutes(app: FastifyInstance) {
     } catch (err) { await c.query('rollback'); throw err; } finally { c.release(); }
     await app.agents.addCost(e.id, Number(out.usage?.cost_usd ?? 0));
     const { rows } = await app.db.query(`${MESSAGES} where m.id = any($1::uuid[]) order by m.created_at, m.role desc`, [inserted]);
-    const msgs = rows.map(toMessage);
     app.emitToUser(e.reviewer_id, 'execution:message', { id: e.id });
-    return reply.status(201).send(msgs);
+    return rows.map(toMessage);
+  }
+
+  /** One turn: the reviewer says something (optionally with a screenshot), the agent answers (question), plans a change, or asks back. Nothing is changed until Apply & rerun. */
+  app.post<{ Params: { id: string } }>('/executions/:id/messages', async (req, reply) => {
+    const t = await prepareTurn(req as any);
+    let out;
+    try { out = await app.agents.chat(t.exec, t.text, t.history, t.image ? [toDataUrl(t.image.mime, t.image.data)] : []); }
+    catch (err) { app.log.warn({ err: (err as Error).message }, 'agent chat failed'); throw new HttpError(502, 'agent_unavailable', 'the agent could not answer right now; try again'); }
+    return reply.status(201).send(await saveTurn(t, out));
+  });
+
+  /** The same turn, streamed as newline-delimited JSON: `{"t":"delta","text"}` while the agent writes, then `{"t":"done","messages":[…]}` (or `{"t":"error",…}`). */
+  app.post<{ Params: { id: string } }>('/executions/:id/messages/stream', async (req, reply) => {
+    const t = await prepareTurn(req as any);
+    let upstream: Response;
+    try { upstream = await app.agents.chatStream(t.exec, t.text, t.history, t.image ? [toDataUrl(t.image.mime, t.image.data)] : []); }
+    catch (err) { app.log.warn({ err: (err as Error).message }, 'agent chat stream failed'); throw new HttpError(502, 'agent_unavailable', 'the agent could not answer right now; try again'); }
+    reply.hijack();
+    reply.raw.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
+    const send = (o: object) => reply.raw.write(JSON.stringify(o) + '\n');
+    try {
+      const decoder = new TextDecoder();
+      let buf = '', done = false;
+      for await (const chunk of upstream.body as unknown as AsyncIterable<Uint8Array>) {
+        buf += decoder.decode(chunk, { stream: true });
+        let nl: number;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line) continue;
+          const msg = JSON.parse(line);
+          if (msg.t === 'delta') send({ t: 'delta', text: String(msg.text ?? '') });
+          else if (msg.t === 'done') { done = true; send({ t: 'done', messages: await saveTurn(t, msg) }); }
+          else if (msg.t === 'error') { done = true; send({ t: 'error', message: 'the agent could not answer right now; try again' }); }
+        }
+      }
+      if (!done) send({ t: 'error', message: 'the agent stopped before it finished; try again' });
+    } catch (err) {
+      app.log.warn({ err: (err as Error).message }, 'agent chat stream broke');
+      send({ t: 'error', message: 'the agent could not answer right now; try again' });
+    } finally { reply.raw.end(); }
+  });
+
+  /** The screenshot attached to a chat message, for the people who can see the review. */
+  app.get<{ Params: { id: string; mid: string } }>('/executions/:id/messages/:mid/image', async (req, reply) => {
+    const me = await requireUser(app, req);
+    uuid(req.params.mid);
+    const e = await load(req.params.id, me);
+    const { rows } = await app.db.query('select image, image_mime from execution_messages where id = $1 and execution_id = $2 and image is not null', [req.params.mid, e.id]);
+    if (!rows[0]) throw new HttpError(404, 'not_found', 'image not found');
+    return reply.header('content-type', rows[0].image_mime).header('x-content-type-options', 'nosniff').header('cache-control', 'private, max-age=0')
+      .header('content-security-policy', "default-src 'none'; sandbox").send(rows[0].image);
   });
 
   /** Apply & rerun: everything asked for in this revision's chat (plus an optional note) goes to the agent as one request for changes. */

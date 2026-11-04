@@ -29,6 +29,7 @@ export const ROUTE_LIMITS: { match: RegExp; method: string; perMin: number; name
   { match: /^\/api\/executions\/[^/]+\/send-email$/, method: 'POST', perMin: 6, name: 'send_email' },
   { match: /^\/api\/projects\/[^/]+\/files$/, method: 'POST', perMin: 20, name: 'upload' },
   { match: /^\/api\/meetings\/[^/]+\/messages$/, method: 'POST', perMin: 60, name: 'chat' },
+  { match: /^\/api\/executions\/[^/]+\/messages(\/stream)?$/, method: 'POST', perMin: 20, name: 'agent_chat' }, // each turn is a model call
   { match: /^\/api\/projects\/[^/]+\/memory\/search$/, method: 'GET', perMin: 30, name: 'memory_search' },
   { match: /^\/api\/projects\/[^/]+\/connections\/google\/start$/, method: 'POST', perMin: 10, name: 'oauth_start' },
 ];

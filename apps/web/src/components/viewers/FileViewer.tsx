@@ -26,7 +26,7 @@ export function FileViewer({ title, payload }: { title: string | null; payload: 
     <div>
       <div className="row" style={{ gap: 12, marginBottom: 10, flexWrap: 'wrap' }}>
         <button onClick={download} disabled={busy}><Download size={15} /> {busy ? 'Downloading…' : `Download ${name}`}</button>
-        <span className="faint">{files.length} file{files.length === 1 ? '' : 's'}{typeof payload?.size === 'number' ? ` · ${(payload.size / 1024).toFixed(1)} KB` : ''}{payload?.kind === 'site' ? ' · unzip and open index.html' : ''}</span>
+        <span className="faint">{payload?.kind === 'deck' ? `${payload.slides} slides` : `${files.length} file${files.length === 1 ? '' : 's'}`}{typeof payload?.size === 'number' ? ` · ${(payload.size / 1024).toFixed(1)} KB` : ''}{payload?.kind === 'site' ? ' · unzip and open index.html' : ''}{payload?.kind === 'deck' ? ' · editable in PowerPoint, Keynote or Google Slides' : ''}</span>
       </div>
       {error && <p className="error" role="alert">{error}</p>}
       <ul style={{ listStyle: 'none', margin: 0, padding: 0 }} aria-label="Files in the download">
