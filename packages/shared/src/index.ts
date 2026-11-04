@@ -204,7 +204,7 @@ export interface ExecutionSummary {
 }
 export type StepKind = 'plan' | 'search' | 'read' | 'consult' | 'tool' | 'draft' | 'check';
 export interface ExecutionStep { seq: number; revision: number; kind: StepKind; label: string; detail: Record<string, unknown>; status: 'running' | 'done' | 'failed'; startedAt: string; endedAt: string | null }
-export interface ExecutionUsage { calls: number; searches?: number; sandboxCostUsd?: number; promptTokens: number; completionTokens: number; costUsd: number; models: string[] }
+export interface ExecutionUsage { calls: number; searches?: number; sandboxCostUsd?: number; promptTokens: number; /** Prompt tokens Meta served from its prompt cache (the cost shown is still the full list price). */ cachedTokens?: number; completionTokens: number; costUsd: number; models: string[] }
 export interface ExecutionArtifact {
   id: string; type: 'markdown' | 'image' | 'pdf' | 'video' | 'diff' | 'link' | 'file' | 'email_draft' | 'html' | 'table' | 'verification';
   title: string | null; uri: string | null; payload: Record<string, any> | null; revision: number;

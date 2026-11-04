@@ -1,6 +1,6 @@
 import { AlertTriangle, CheckCircle2, Clock, FlaskConical, XCircle } from 'lucide-react';
 
-interface Step { phase: string; label: string; exit_code: number; seconds: number; timed_out: boolean; output: string; counts?: { passed?: number; failed?: number; skipped?: number } }
+interface Step { phase: string; label: string; exit_code: number; seconds?: number; timed_out?: boolean; output: string; counts?: { passed?: number; failed?: number; skipped?: number } }
 
 const TONE = {
   verified: { icon: <CheckCircle2 size={20} />, color: 'var(--success)', title: 'Verified in an isolated sandbox', soft: 'var(--success-soft)' },
@@ -40,9 +40,9 @@ export function VerificationView({ payload }: { payload: Record<string, any> | n
           {steps.map((s, i) => (
             <details key={i} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '6px 10px' }}>
               <summary style={{ cursor: 'pointer' }}>
-                <span className="faint">{s.phase === 'setup' ? 'setup (limited network)' : 'run (no network)'} · </span><strong>{s.label}</strong>
-                <span style={{ marginLeft: 8, color: s.exit_code === 0 && !s.timed_out ? 'var(--success-text)' : 'var(--danger-text)' }}>{s.timed_out ? 'timed out' : `exit ${s.exit_code}`}</span>
-                <span className="faint"> · {s.seconds.toFixed(1)} s{s.counts?.passed != null ? ` · ${s.counts.passed} passed${s.counts.failed ? `, ${s.counts.failed} failed` : ''}` : ''}</span>
+                <span className="faint">{s.phase === 'setup' ? 'setup (limited network)' : s.phase === 'static' ? 'static check' : 'run (no network)'} · </span><strong>{s.label}</strong>
+                <span style={{ marginLeft: 8, color: s.exit_code === 0 && !s.timed_out ? 'var(--success-text)' : 'var(--danger-text)' }}>{s.timed_out ? 'timed out' : s.phase === 'static' ? (s.exit_code === 0 ? 'passed' : 'failed') : `exit ${s.exit_code}`}</span>
+                <span className="faint">{s.phase === 'static' ? '' : ` · ${(s.seconds ?? 0).toFixed(1)} s`}{s.counts?.passed != null ? ` · ${s.counts.passed} passed${s.counts.failed ? `, ${s.counts.failed} failed` : ''}` : ''}</span>
               </summary>
               <pre className="diff" style={{ marginTop: 8, whiteSpace: 'pre-wrap', maxHeight: 280, overflow: 'auto' }}><code>{s.output || '(no output)'}</code></pre>
             </details>

@@ -88,6 +88,38 @@ class CitationTest(unittest.TestCase):
         self.assertIn("did not open the pages", txt)
 
 
+class AnnotateTest(unittest.TestCase):
+    """Claim-level citations from url_citation spans go through the same verification as links written in the text."""
+
+    def setUp(self):
+        self.retrieved = research.Retrieved(SEARCHES)
+
+    def test_a_marker_is_placed_after_each_cited_passage_and_then_numbered_and_verified(self):
+        text = "Acme costs 10. Globex costs 20. Nobody else matters."
+        spans = [{"url": "https://www.acme.example/pricing/", "title": "Acme", "start": 0, "end": 14}, {"url": "https://globex.example/plans?utm=x", "title": "G", "start": 15, "end": 31},
+                 {"url": "https://invented.example/x", "title": "?", "start": 32, "end": 52}]
+        marked, n = research.annotate(text, spans)
+        self.assertEqual(n, 3)
+        out, sources, dropped = research.number_citations(marked, self.retrieved)
+        self.assertEqual(out.strip(), "Acme costs 10. [1] Globex costs 20. [2] Nobody else matters.")
+        self.assertEqual([s["title"] for s in sources], ["Acme pricing", "Globex plans"])
+        self.assertEqual(dropped, 1)                                    # the invented source never became a citation
+
+    def test_existing_links_are_not_doubled_and_urls_with_parentheses_survive(self):
+        text = "Acme costs 10 ([Acme](https://www.acme.example/pricing/)). Later claim."
+        marked, n = research.annotate(text, [{"url": "https://www.acme.example/pricing/", "start": 0, "end": 13}, {"url": "https://x.example/a_(b)", "start": 56, "end": 68}])
+        self.assertEqual(n, 1)                                          # the first span is already followed by a link
+        self.assertIn("[](https://x.example/a_%28b%29)", marked)
+
+    def test_bad_spans_and_unsafe_urls_are_skipped_and_the_count_is_capped(self):
+        text = "x" * 200
+        spans = [{"url": "javascript:alert(1)", "start": 0, "end": 5}, {"url": "https://a.example", "start": 0, "end": 999}, {"url": "https://a.example", "start": 0, "end": 0}, {"url": "https://a.example", "start": 0, "end": "7"}]
+        self.assertEqual(research.annotate(text, spans), (text, 0))
+        many = [{"url": f"https://s{i}.example", "start": 0, "end": i + 1} for i in range(100)]
+        self.assertEqual(research.annotate(text, many, limit=5)[1], 5)
+        self.assertEqual(research.annotate("text", []), ("text", 0))
+
+
 class RunTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         os.environ.pop("WEB_SEARCH", None)
