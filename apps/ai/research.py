@@ -108,6 +108,26 @@ class Retrieved:
         return None
 
 
+def annotate(text: str, annotations: list[dict], limit: int = 40) -> tuple[str, int]:
+    """Claim-level citations. When the model returns url_citation spans (it does not always), put a link marker right after each cited passage
+    so that number_citations verifies and numbers them like any other link. Returns (text, markers added)."""
+    seen: set[tuple[int, str]] = set()
+    spans = []
+    for a in annotations:
+        end, url = a.get("end"), str(a.get("url") or "")
+        if not isinstance(end, int) or isinstance(end, bool) or not 0 < end <= len(text) or not re.match(r"^https?://", url, re.I) or (end, url) in seen:
+            continue
+        seen.add((end, url))
+        spans.append((end, url))
+    out, added = text, 0
+    for end, url in sorted(spans, reverse=True)[:limit * 2]:
+        if added >= limit or re.match(r"\s*(\[|\()", out[end:end + 4]):   # already followed by a link or a marker
+            continue
+        out = out[:end] + f" [] ({url.replace('(', '%28').replace(')', '%29')})".replace("] (", "](") + out[end:]
+        added += 1
+    return out, added
+
+
 _MD_LINK = re.compile(r"\[([^\]]*)\]\((https?://[^)\s]+)\)")
 _BARE = re.compile(r"https?://[^\s)\]>\"']+")
 
@@ -201,9 +221,11 @@ async def run_research(req: RunRequest, state: _State, trace: Trace) -> RunRespo
                     f"Today is {today}.\nQuestion: {question}\nSub-questions:\n" + "\n".join(f"- {s}" for s in subs) + "\nSuggested searches:\n" + "\n".join(f"- {q}" for q in queries),
                     search=True, max_searches=MAX_SEARCHES, max_tokens=1800, model=model)
                 retrieved = Retrieved(out["searches"])
-                findings, sources, dropped = number_citations(out["text"], retrieved)
+                marked_text, claim_level = annotate(out["text"], out.get("annotations") or [])
+                findings, sources, dropped = number_citations(marked_text, retrieved)
                 searches_made = len(out["searches"])
-                st["detail"].update({"searches": searches_made, "retrieved": len(retrieved.items), "cited": len(sources), "unverified_links_dropped": dropped})
+                st["detail"].update({"searches": searches_made, "retrieved": len(retrieved.items), "cited": len(sources), "unverified_links_dropped": dropped,
+                                     "claim_level_citations": claim_level})
         except Exception as e:  # noqa: BLE001 - web trouble must not lose the project-only part of the work
             web_error = f"Web search failed ({type(e).__name__})."
             use_web = False

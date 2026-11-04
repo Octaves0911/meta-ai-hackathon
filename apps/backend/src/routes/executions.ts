@@ -23,7 +23,7 @@ const toSummary = (r: any): ExecutionSummary => ({
   repo: r.repo_id ? { id: r.repo_id, fullName: `${r.repo_owner}/${r.repo_name}` } : null,
 });
 
-const toUsage = (u: any): ExecutionUsage | null => u ? ({ calls: u.calls ?? 0, searches: u.searches ?? 0, sandboxCostUsd: u.sandbox_cost_usd ?? 0, promptTokens: u.prompt_tokens ?? 0, completionTokens: u.completion_tokens ?? 0, costUsd: u.cost_usd ?? 0, models: u.models ?? [] }) : null;
+const toUsage = (u: any): ExecutionUsage | null => u ? ({ calls: u.calls ?? 0, searches: u.searches ?? 0, sandboxCostUsd: u.sandbox_cost_usd ?? 0, promptTokens: u.prompt_tokens ?? 0, cachedTokens: u.cached_tokens ?? 0, completionTokens: u.completion_tokens ?? 0, costUsd: u.cost_usd ?? 0, models: u.models ?? [] }) : null;
 
 export async function executionRoutes(app: FastifyInstance) {
   const uuid = (id: string) => { if (!z.string().uuid().safeParse(id).success) throw new HttpError(404, 'not_found', 'not found'); };

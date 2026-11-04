@@ -15,7 +15,7 @@ import base64
 
 from repo_picker import RepoIn
 from brief import BriefIn, CtxItem, TaskIn, brief_text_for_facts, render_brief, render_context  # noqa: F401  (TaskIn/CtxItem re-exported)
-from llm import agent_model, begin_usage, chat_json, complete_json, complete_text, sanitize_label
+from llm import agent_model, begin_usage, chat_json, complete_json, complete_text, sanitize_label, set_cache_key
 from files import build_pdf, markdown_to_spec
 from quality import Check, self_check, unsupported_facts
 from runtrace import LimitExceeded, Trace
@@ -459,6 +459,7 @@ def _mock_chat(req: ChatRequest) -> ChatResponse:
 
 async def chat_with_agent(name: str, req: ChatRequest) -> ChatResponse:
     usage = begin_usage()
+    set_cache_key('chat', name, getattr(req, 'project_id', None) or req.task.title)  # every turn re-sends the same brief and output first, so later turns reuse them
     if os.environ.get("AGENTS_MODE") == "mock":
         out = _mock_chat(req)
         out.usage = usage
@@ -485,6 +486,7 @@ async def chat_with_agent(name: str, req: ChatRequest) -> ChatResponse:
 async def _run(name: str, req: RunRequest) -> RunResponse:
     state = _State()
     usage = begin_usage()
+    set_cache_key('agent', name, req.project_id)
     trace = Trace(req.execution_id, req.revision, req.callback_url, os.environ.get("INTERNAL_SECRET", ""), max_steps=16 if name == "code" else 8)
     if os.environ.get("AGENTS_MODE") == "mock":
         async with trace.step("draft", "Produce the mock deliverable"):

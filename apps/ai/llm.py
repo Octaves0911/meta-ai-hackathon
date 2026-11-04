@@ -1,6 +1,7 @@
 """Thin LLM gateway (Meta Model API, OpenAI-compatible Chat Completions). One client for extractor, judge, answerer and agents."""
 import asyncio
 import contextvars
+import re
 import json
 import os
 import random
@@ -46,9 +47,20 @@ _usage: contextvars.ContextVar[dict | None] = contextvars.ContextVar("llm_usage"
 
 def begin_usage() -> dict:
     """Start counting tokens for the current task (an agent run). Returns the live accumulator."""
-    acc = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0, "models": []}
+    acc = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "cost_usd": 0.0, "models": []}
     _usage.set(acc)
     return acc
+
+
+# Prompt caching is automatic on Meta's API: a request that starts with the same tokens as a recent one reuses their computed state.
+# `prompt_cache_key` only routes same-prefix requests to the same backend (higher hit rate), so it names a SHARED PREFIX, e.g. one agent in one project.
+_cache_key: contextvars.ContextVar[str | None] = contextvars.ContextVar("llm_cache_key", default=None)
+
+
+def set_cache_key(*parts: str | None) -> None:
+    """Name the prompt prefix the calls of this task share (an agent in a project, the live assistant of a meeting). No parts clears it."""
+    key = ":".join(re.sub(r"[^\w.-]+", "-", str(p))[:60] for p in parts if p)
+    _cache_key.set(key[:128] or None)
 
 
 SEARCH_COST_USD = 0.0025  # $2.50 per 1,000 web searches
@@ -62,6 +74,9 @@ def _record(model: str, body: dict, searches: int = 0) -> None:
     # Chat Completions reports prompt/completion tokens, the Responses API input/output tokens.
     pt = int(u.get("prompt_tokens") or u.get("input_tokens") or 0)
     ct = int(u.get("completion_tokens") or u.get("output_tokens") or 0)
+    details = u.get("prompt_tokens_details") or u.get("input_tokens_details") or {}
+    cached = min(pt, int((details or {}).get("cached_tokens") or 0))
+    acc["cached_tokens"] = acc.get("cached_tokens", 0) + cached   # informational: cost below stays at the full list price (an upper bound)
     pin, pout = PRICES.get(model, (0.0, 0.0))
     acc["calls"] += 1
     acc["prompt_tokens"] += pt
@@ -131,6 +146,8 @@ async def _call(system: str, user: str, max_tokens: int, *, model: str | None = 
         ],
     }
     body["reasoning_effort"] = effort or os.environ.get("LLM_REASONING_EFFORT") or DEFAULT_EFFORT  # minimal | low | medium | high | xhigh
+    if _cache_key.get():
+        body["prompt_cache_key"] = _cache_key.get()
     if schema is not None:  # constrained decoding: the model can only emit JSON that matches the schema
         body["response_format"] = {"type": "json_schema", "json_schema": {"name": "result", "strict": True, "schema": schema}}
     headers = {"authorization": f"Bearer {key}", "content-type": "application/json"}
@@ -158,7 +175,7 @@ def _responses_url() -> str:
 async def respond(instructions: str, user: str, *, search: bool = False, max_searches: int = 5, max_tokens: int = 2500,
                   model: str | None = None, effort: str | None = None) -> dict:
     """Meta Responses API, optionally with the built-in web_search tool. Returns
-    {text, searches: [{query, results: [{title, url}]}], citations: [{url, title}], status}.
+    {text, searches: [{query, results: [{title, url}]}], citations: [{url, title}], annotations: [{url, title, start, end}], status}.
     Search results carry titles and URLs only (no page text), so callers verify links, not claims."""
     key = _api_key()
     if not key:
@@ -169,6 +186,8 @@ async def respond(instructions: str, user: str, *, search: bool = False, max_sea
         "max_output_tokens": max_tokens + REASONING_HEADROOM,
         "reasoning": {"effort": effort or os.environ.get("LLM_REASONING_EFFORT") or DEFAULT_EFFORT},
     }
+    if _cache_key.get():
+        body["prompt_cache_key"] = _cache_key.get()
     if search:
         body.update({"tools": [{"type": "web_search"}], "include": ["web_search_call.results"], "max_tool_calls": max(1, min(max_searches, 5))})
     payload = await _post_json(_responses_url(), body, {"authorization": f"Bearer {key}", "content-type": "application/json"}, timeout=150)
@@ -177,16 +196,31 @@ async def respond(instructions: str, user: str, *, search: bool = False, max_sea
         calls = [i for i in output if i.get("type") == "web_search_call"]
         searches = [{"query": str((c.get("action") or {}).get("query") or ""), "results": [{"title": str(r.get("title") or ""), "url": str(r.get("url") or "")} for r in (c.get("results") or []) if r.get("url")]} for c in calls]
         messages = [i for i in output if i.get("type") == "message"]
-        texts = ["".join(p.get("text") or "" for p in (m.get("content") or []) if isinstance(p, dict) and p.get("type") == "output_text") for m in messages]
+        texts, spans = [], []
+        for m in messages:
+            buf, anns = "", []
+            for p in (m.get("content") or []):
+                if not (isinstance(p, dict) and p.get("type") == "output_text"):
+                    continue
+                for a in (p.get("annotations") or []):   # character spans are relative to this block's text; keep them relative to the whole message
+                    if a.get("type") == "url_citation" and a.get("url") and isinstance(a.get("start_index"), int) and isinstance(a.get("end_index"), int):
+                        anns.append({"url": str(a["url"]), "title": str(a.get("title") or ""), "start": len(buf) + a["start_index"], "end": len(buf) + a["end_index"]})
+                buf += p.get("text") or ""
+            texts.append(buf)
+            spans.append(anns)
         citations = [{"url": str(a.get("url")), "title": str(a.get("title") or "")} for m in messages for p in (m.get("content") or []) if isinstance(p, dict)
                      for a in (p.get("annotations") or []) if a.get("type") == "url_citation" and a.get("url")]
     except (AttributeError, TypeError) as e:
         raise HTTPException(status_code=502, detail="LLM returned an unexpected response") from e
     _record(model, payload, searches=len(calls))
-    text = next((t for t in reversed(texts) if t.strip()), "").strip()  # the last message is the answer; earlier ones are preambles
+    idx = next((i for i in range(len(texts) - 1, -1, -1) if texts[i].strip()), None)  # the last message is the answer; earlier ones are preambles
+    text = texts[idx].strip() if idx is not None else ""
     if not text:
         raise HTTPException(status_code=502, detail=f"empty response (status={payload.get('status')})")
-    return {"text": text, "searches": searches, "citations": citations, "status": payload.get("status")}
+    lead = len(texts[idx]) - len(texts[idx].lstrip())
+    # Claim-level citations (the model does not always return them): spans of the returned text, shifted by what strip() removed.
+    annotations = [{**a, "start": a["start"] - lead, "end": a["end"] - lead} for a in spans[idx] if 0 <= a["start"] - lead < a["end"] - lead <= len(text)]
+    return {"text": text, "searches": searches, "citations": citations, "annotations": annotations, "status": payload.get("status")}
 
 
 async def complete_text(system: str, user: str, max_tokens: int = 3000, *, model: str | None = None, effort: str | None = None) -> str:

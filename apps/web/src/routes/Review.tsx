@@ -86,7 +86,7 @@ export function Review() {
             <div><dt>Revision</dt><dd>{d.revision} of {MAX_REVISIONS}</dd></div>
             {d.repo && <div><dt>Repository</dt><dd><a href={`https://github.com/${d.repo.fullName}`} target="_blank" rel="noreferrer noopener">{d.repo.fullName}</a></dd></div>}
             {d.confidence != null && <div><dt>Confidence</dt><dd><ConfidencePill value={d.confidence} /></dd></div>}
-            {d.usage && d.usage.calls > 0 && <div><dt>Cost</dt><dd title={`${d.usage.promptTokens + d.usage.completionTokens} tokens${d.usage.searches ? ` · ${d.usage.searches} web search${d.usage.searches > 1 ? 'es' : ''}` : ''} · ${d.usage.models.join(', ')}`}>{usd(d.usage.costUsd)}</dd></div>}
+            {d.usage && d.usage.calls > 0 && <div><dt>Cost</dt><dd title={`${d.usage.promptTokens + d.usage.completionTokens} tokens${d.usage.searches ? ` · ${d.usage.searches} web search${d.usage.searches > 1 ? 'es' : ''}` : ''}${d.usage.cachedTokens ? ` · ${d.usage.cachedTokens} of ${d.usage.promptTokens} prompt tokens reused from cache (${Math.round((100 * d.usage.cachedTokens) / Math.max(d.usage.promptTokens, 1))}%)` : ''} · ${d.usage.models.join(', ')}`}>{usd(d.usage.costUsd)}</dd></div>}
           </dl>
         </div>
 

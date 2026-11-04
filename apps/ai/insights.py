@@ -5,7 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from llm import complete_json, sanitize_label
+from llm import complete_json, sanitize_label, set_cache_key
 
 EventType = Literal["task", "decision", "deadline", "question", "blocker", "info"]
 Kind = Literal["conflict", "update", "repeat", "answer", "reminder", "context", "no_record", "external"]
@@ -110,6 +110,7 @@ def build_router(require_secret) -> APIRouter:
         )
         user = "Earlier context:\n<transcript>\n" + "\n".join(f"{l.speaker}: {l.text}" for l in req.earlier) + "\n</transcript>\n" \
             "New lines to analyse:\n<transcript>\n" + "\n".join(f"[{l.seq}] {l.speaker}: {l.text}" for l in req.lines) + "\n</transcript>"
+        set_cache_key('insights', 'extract')  # the instructions are the same for every call, so the prefix is shared
         data = await complete_json(system, user)
         try:
             return ExtractResponse(events=[Event(**e) for e in data.get("events", [])])
@@ -137,6 +138,7 @@ def build_router(require_secret) -> APIRouter:
 
         cands = "\n".join(tag(c) for c in req.candidates)
         user = f"Event:\n{json.dumps(req.event.model_dump())}\n\nCandidates:\n{cands or '(none)'}"
+        set_cache_key('insights', 'judge')  # the instructions are the same for every call, so the prefix is shared
         data = await complete_json(system, user, max_tokens=600)
         try:
             out = JudgeResponse(**data)
@@ -159,6 +161,7 @@ def build_router(require_secret) -> APIRouter:
             f'<untrusted_source id="{c.id}" label="{sanitize_label(c.label)}">{c.text.replace("<", " ").replace(">", " ")}</untrusted_source>'
             for c in req.context
         )
+        set_cache_key('insights', 'answer')  # the instructions are the same for every call, so the prefix is shared
         data = await complete_json(system, f"Question: {req.question}\n\nSources:\n{srcs or '(none)'}", max_tokens=700)
         try:
             out = AnswerResponse(answer=str(data["answer"])[:1200], used_ids=[str(i) for i in data.get("used_ids", [])])
