@@ -36,6 +36,25 @@ export async function fetchBlob(path: string): Promise<Blob> {
   return res.blob();
 }
 
+/** POST that answers with newline-delimited JSON (the streamed agent chat): `onLine` gets each parsed line as it arrives; resolves when the stream ends. */
+export async function streamNdjson<T = any>(path: string, json: unknown, onLine: (line: T) => void): Promise<void> {
+  const res = await fetch(`/api${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-user': storedUser() ?? '' }, body: JSON.stringify(json) });
+  if (!res.ok || !res.body) throw new Error((await res.json().catch(() => null))?.error?.message ?? 'request failed');
+  const reader = res.body.getReader(), decoder = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (line) { try { onLine(JSON.parse(line) as T); } catch { /* a broken line is skipped */ } }
+    }
+  }
+}
+
 export interface Session { user: User | null; setUser: (u: User | null) => void }
 export const SessionContext = createContext<Session>({ user: null, setUser: () => {} });
 export const useSession = () => useContext(SessionContext);

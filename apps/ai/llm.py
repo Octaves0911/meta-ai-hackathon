@@ -132,7 +132,19 @@ async def _post_json(url: str, body: dict, headers: dict, timeout: float = 120) 
     raise HTTPException(status_code=502, detail="LLM provider failed")
 
 
-async def _call(system: str, user: str, max_tokens: int, *, model: str | None = None, effort: str | None = None, schema: dict | None = None) -> str:
+IMAGE_URL = re.compile(r"^data:image/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$")
+MAX_IMAGES = 4
+
+
+def user_content(user: str, images: list[str] | None = None):
+    """A plain string, or text plus up to four base64 images as content parts (Meta vision input). Anything that is not a small image data URL is ignored."""
+    good = [i for i in (images or []) if isinstance(i, str) and len(i) < 4_000_000 and IMAGE_URL.match(i)][:MAX_IMAGES]
+    if not good:
+        return user
+    return [{"type": "text", "text": user}] + [{"type": "image_url", "image_url": {"url": i}} for i in good]
+
+
+async def _call(system: str, user: str, max_tokens: int, *, model: str | None = None, effort: str | None = None, schema: dict | None = None, images: list[str] | None = None) -> str:
     key = _api_key()
     if not key:
         raise HTTPException(status_code=503, detail="LLM_API_KEY is not configured")
@@ -142,7 +154,7 @@ async def _call(system: str, user: str, max_tokens: int, *, model: str | None = 
         "max_completion_tokens": max_tokens + REASONING_HEADROOM,
         "messages": [
             {"role": "system", "content": f"{system}\n\n{UNTRUSTED_NOTE}"},
-            {"role": "user", "content": user},
+            {"role": "user", "content": user_content(user, images)},
         ],
     }
     body["reasoning_effort"] = effort or os.environ.get("LLM_REASONING_EFFORT") or DEFAULT_EFFORT  # minimal | low | medium | high | xhigh
@@ -228,24 +240,184 @@ async def complete_text(system: str, user: str, max_tokens: int = 3000, *, model
     return (await _call(system, user, max_tokens, model=model, effort=effort)).strip()
 
 
-async def complete_json(system: str, user: str, max_tokens: int = 1200, *, model: str | None = None, effort: str | None = None) -> dict:
+async def complete_json(system: str, user: str, max_tokens: int = 1200, *, model: str | None = None, effort: str | None = None, images: list[str] | None = None) -> dict:
     last: Exception | None = None
     for _ in range(2):  # one retry if the model returns malformed JSON
         try:
-            return _extract_json(await _call(f"{system}\nRespond with a single JSON object and nothing else.", user, max_tokens, model=model, effort=effort))
+            return _extract_json(await _call(f"{system}\nRespond with a single JSON object and nothing else.", user, max_tokens, model=model, effort=effort, images=images))
         except ValueError as e:
             last = e
     raise HTTPException(status_code=502, detail=f"LLM returned invalid output: {last}")
 
 
-async def chat_json(system: str, user: str, schema: dict, max_tokens: int = 1200, *, model: str | None = None, effort: str | None = None) -> dict:
+async def chat_json(system: str, user: str, schema: dict, max_tokens: int = 1200, *, model: str | None = None, effort: str | None = None, images: list[str] | None = None) -> dict:
     """Schema-constrained JSON (Meta `response_format: json_schema`). If the provider rejects the schema we fall back to
     prompt-and-parse so a provider quirk never takes an agent down; callers still validate the result."""
     try:
-        return _extract_json(await _call(system, user, max_tokens, model=model, effort=effort, schema=schema))
+        return _extract_json(await _call(system, user, max_tokens, model=model, effort=effort, schema=schema, images=images))
     except HTTPException as e:
         if e.status_code != 502:
             raise
     except ValueError:
         pass
-    return await complete_json(system, user, max_tokens, model=model, effort=effort)
+    return await complete_json(system, user, max_tokens, model=model, effort=effort, images=images)
+
+
+# ---------------------------------------------------------------- streaming (Meta Chat Completions, server-sent events)
+class FieldStreamer:
+    """Pulls one JSON string field (e.g. "reply") out of a JSON document that is still arriving, so the UI can show it as it is written.
+    feed(chunk) returns the newly decoded characters of that field; the full document is parsed separately when the stream ends."""
+
+    ESC = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "/": "/", "\\": "\\", '"': '"'}
+
+    def __init__(self, field: str):
+        self.marker = re.compile(r'"%s"\s*:\s*"' % re.escape(field))
+        self.buf = ""
+        self.pos = -1          # index of the first character of the field's value once found
+        self.done = False
+        self.pending = ""      # an escape sequence cut in half by a chunk boundary
+
+    def feed(self, chunk: str) -> str:
+        if self.done:
+            return ""
+        self.buf += chunk
+        if self.pos < 0:
+            m = self.marker.search(self.buf)
+            if not m:
+                return ""
+            self.pos = m.end()
+            text = self.buf[self.pos:]
+            self.buf = ""
+        else:
+            text, self.buf = self.pending + chunk, ""
+            self.pending = ""
+        out, i = [], 0
+        while i < len(text):
+            c = text[i]
+            if c == '"':
+                self.done = True
+                break
+            if c == "\\":
+                if i + 1 >= len(text):
+                    self.pending = text[i:]
+                    break
+                n = text[i + 1]
+                if n == "u":
+                    if i + 6 > len(text):
+                        self.pending = text[i:]
+                        break
+                    try:
+                        out.append(chr(int(text[i + 2:i + 6], 16)))
+                    except ValueError:
+                        pass
+                    i += 6
+                    continue
+                out.append(self.ESC.get(n, n))
+                i += 2
+                continue
+            out.append(c)
+            i += 1
+        return "".join(out)
+
+
+async def stream_chat_json(system: str, user: str, schema: dict, field: str, max_tokens: int = 600, *, model: str | None = None, effort: str | None = None,
+                           images: list[str] | None = None):
+    """Async generator for a schema-constrained answer: yields ("delta", text) with the new characters of `field` as they are generated,
+    then ("done", parsed_object). Token usage (stream_options.include_usage) joins the run's totals."""
+    key = _api_key()
+    if not key:
+        raise HTTPException(status_code=503, detail="LLM_API_KEY is not configured")
+    model = model or os.environ.get("LLM_MODEL") or DEFAULT_MODEL
+    body: dict = {
+        "model": model, "stream": True, "stream_options": {"include_usage": True},
+        "max_completion_tokens": max_tokens + REASONING_HEADROOM,
+        "messages": [{"role": "system", "content": f"{system}\n\n{UNTRUSTED_NOTE}"}, {"role": "user", "content": user_content(user, images)}],
+        "reasoning_effort": effort or os.environ.get("LLM_REASONING_EFFORT") or DEFAULT_EFFORT,
+        "response_format": {"type": "json_schema", "json_schema": {"name": "result", "strict": True, "schema": schema}},
+    }
+    if _cache_key.get():
+        body["prompt_cache_key"] = _cache_key.get()
+    headers = {"authorization": f"Bearer {key}", "content-type": "application/json"}
+    url = os.environ.get("LLM_API_URL", DEFAULT_URL)
+    fs, full, usage = FieldStreamer(field), "", None
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=10)) as client:
+            async with client.stream("POST", url, json=body, headers=headers) as res:
+                if res.status_code >= 400:
+                    raise HTTPException(status_code=502, detail=f"LLM provider returned {res.status_code}")
+                async for line in res.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except ValueError:
+                        continue
+                    if chunk.get("usage"):
+                        usage = chunk["usage"]
+                    for ch in chunk.get("choices") or []:
+                        piece = (ch.get("delta") or {}).get("content")    # the final chunk has None
+                        if piece:
+                            full += piece
+                            new = fs.feed(piece)
+                            if new:
+                                yield ("delta", new)
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail="LLM provider unreachable") from e
+    if usage:
+        _record(model, {"usage": usage})
+    try:
+        yield ("done", _extract_json(full))
+    except ValueError as e:
+        raise HTTPException(status_code=502, detail="LLM returned invalid output") from e
+
+
+# ---------------------------------------------------------------- tool / function calling (Meta Chat Completions)
+async def chat_with_tools(system: str, user: str, tools: list[dict], run_tool, *, max_rounds: int = 3, max_tokens: int = 700, model: str | None = None,
+                          effort: str | None = None) -> tuple[str, list[dict]]:
+    """The model may call the given functions; `run_tool(name, args) -> jsonable` executes them and the results go back until it answers.
+    Returns (final text, [{name, args, ok}]). Unknown tools and bad arguments are reported back to the model, never executed."""
+    key = _api_key()
+    if not key:
+        raise HTTPException(status_code=503, detail="LLM_API_KEY is not configured")
+    model = model or os.environ.get("LLM_MODEL") or DEFAULT_MODEL
+    names = {t["function"]["name"] for t in tools}
+    messages: list[dict] = [{"role": "system", "content": f"{system}\n\n{UNTRUSTED_NOTE}"}, {"role": "user", "content": user}]
+    headers = {"authorization": f"Bearer {key}", "content-type": "application/json"}
+    url = os.environ.get("LLM_API_URL", DEFAULT_URL)
+    trace: list[dict] = []
+    for round_no in range(max_rounds + 1):
+        body: dict = {"model": model, "messages": messages, "max_completion_tokens": max_tokens + REASONING_HEADROOM,
+                      "reasoning_effort": effort or os.environ.get("LLM_REASONING_EFFORT") or DEFAULT_EFFORT}
+        if round_no < max_rounds:      # the last round is answer-only, so a model that keeps asking for tools still ends
+            body["tools"] = tools
+        if _cache_key.get():
+            body["prompt_cache_key"] = _cache_key.get()
+        payload = await _post_json(url, body, headers)
+        _record(model, payload)
+        try:
+            choice = payload["choices"][0]
+            msg = choice["message"]
+        except (KeyError, IndexError, TypeError) as e:
+            raise HTTPException(status_code=502, detail="LLM returned an unexpected response") from e
+        calls = msg.get("tool_calls") or []
+        if not calls:
+            return (msg.get("content") or "").strip(), trace
+        messages.append({k: v for k, v in msg.items() if k in ("role", "content", "tool_calls")})   # the assistant turn that holds the calls must be replayed
+        for c in calls[:4]:
+            fn = c.get("function") or {}
+            name = str(fn.get("name") or "")
+            ok = False
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+                if name not in names or not isinstance(args, dict):
+                    raise ValueError("unknown tool or bad arguments")
+                result, ok = await run_tool(name, args), True
+            except Exception as e:  # noqa: BLE001 - a failing tool is information for the model, not a crash
+                result = {"error": f"{name} failed: {str(e)[:120]}"}
+                args = {}
+            trace.append({"name": name, "args": args, "ok": ok})
+            messages.append({"role": "tool", "tool_call_id": c.get("id"), "content": json.dumps(result)[:6000]})
+    return "", trace

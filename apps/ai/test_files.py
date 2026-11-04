@@ -117,13 +117,23 @@ class AgentPdfTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pdf.payload["layout"], "document")
         self.assertEqual(pdf.payload["size"], len(raw))
 
-    def test_deck_tasks_get_slides_and_an_honest_note(self):
+    def test_deck_tasks_get_slides_as_pdf_and_as_an_editable_powerpoint(self):
         out = self.out()
         agents.attach_pdfs(out, "marketing", self.req("Create the launch deck"))
         pdf = next(a for a in out.artifacts if a.type == "pdf")
         self.assertEqual(pdf.payload["layout"], "slides")
         self.assertTrue(pdf.payload["filename"].endswith("-slides.pdf"))
-        self.assertIn("PPTX is not generated yet", out.notes)
+        deck = next(a for a in out.artifacts if a.type == "file")
+        self.assertEqual((deck.payload["mime"], deck.payload["kind"]), (agents.PPTX_MIME, "deck"))
+        self.assertTrue(deck.payload["filename"].endswith("-slides.pptx"))
+        raw = base64.b64decode(deck.payload["file_b64"])
+        self.assertTrue(raw.startswith(b"PK\x03\x04"))
+        self.assertEqual(deck.payload["size"], len(raw))
+        self.assertGreaterEqual(deck.payload["slides"], 2)
+        self.assertNotIn("PPTX is not generated", out.notes or "")
+        plain = self.out()
+        agents.attach_pdfs(plain, "research", self.req())
+        self.assertFalse(any(a.type == "file" for a in plain.artifacts))   # only deck tasks get a PowerPoint
 
     def test_non_markdown_artifacts_and_failures_never_break_the_run(self):
         out = agents.RunResponse(summary="s", artifacts=[agents.ArtifactOut(type="email_draft", title="Email", payload={"to": []})])

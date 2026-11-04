@@ -4,6 +4,7 @@ import { createNotification } from '../services/notifications.js';
 import { enqueue, JobRunner } from '../services/jobs.js';
 import { buildBrief } from './brief.js';
 import { MAX_FILES_PER_RUN, prepareFile } from './files.js';
+import { toDataUrl } from './images.js';
 import { routeTask } from './router.js';
 
 const aiUrl = () => process.env.AI_URL ?? 'http://localhost:5001';
@@ -15,6 +16,8 @@ export const dailyCapUsd = () => Number(process.env.AGENT_DAILY_CAP_USD ?? 5);
 export interface StepIn { seq: number; kind: string; label: string; detail?: Record<string, unknown>; status: string; started_at?: string; ended_at?: string | null }
 
 /** Routes finalized tasks to specialist agents, runs them in the background, and hands results to a human reviewer. */
+type ChatOut = { reply: string; kind: 'ask' | 'change' | 'clarify'; proposed_change: string; usage: { cost_usd?: number } };
+
 export class AgentService {
   readonly jobs: JobRunner;
 
@@ -109,14 +112,24 @@ export class AgentService {
 
   /** One live turn with the agent that produced the work. Throws when the AI service cannot answer. */
   async chat(e: { id: string; task_id: string; project_id: string; meeting_id: string; reviewer_id: string; agent: string; title: string; description: string | null; due: string | null; assignee: string | null; revision: number },
-             message: string, history: { role: string; text: string }[]) {
+             message: string, history: { role: string; text: string }[], images: string[] = []) {
+    const res = await this.chatRequest('chat', e, message, history, images, 60_000);
+    return (await res.json()) as ChatOut;
+  }
+
+  /** The same turn, streamed: the AI service answers with newline-delimited JSON (`delta` lines, then `done`). The caller relays it. */
+  async chatStream(e: Parameters<AgentService['chat']>[0], message: string, history: { role: string; text: string }[], images: string[] = []): Promise<Response> {
+    return this.chatRequest('chat/stream', e, message, history, images, 90_000);
+  }
+
+  private async chatRequest(path: string, e: Parameters<AgentService['chat']>[0], message: string, history: { role: string; text: string }[], images: string[], timeoutMs: number): Promise<Response> {
     const brief = await buildBrief(this.db, this.app.embedder, e);
-    const res = await fetch(`${aiUrl()}/agents/${e.agent}/chat`, {
-      method: 'POST', headers: headers(), signal: AbortSignal.timeout(60_000),
-      body: JSON.stringify({ ...brief, message, history, revision: e.revision, current_output: await this.currentOutput(e.id, e.revision) }),
+    const res = await fetch(`${aiUrl()}/agents/${e.agent}/${path}`, {
+      method: 'POST', headers: headers(), signal: AbortSignal.timeout(timeoutMs),
+      body: JSON.stringify({ ...brief, message, history, images, revision: e.revision, current_output: await this.currentOutput(e.id, e.revision) }),
     });
     if (!res.ok) throw new Error(`agent service responded ${res.status}`);
-    return (await res.json()) as { reply: string; kind: 'ask' | 'change' | 'clarify'; proposed_change: string; usage: { cost_usd?: number } };
+    return res;
   }
 
   private async spentToday(projectId: string): Promise<number> {
@@ -153,7 +166,11 @@ export class AgentService {
     const brief = await buildBrief(this.db, this.app.embedder, e);
 
     let feedback: object | undefined;
+    let images: string[] = [];
     if (e.revision > 0) {
+      // Screenshots the reviewer attached while talking to the agent before asking for this revision (the agent can read them).
+      const { rows: imgs } = await this.db.query("select image, image_mime from execution_messages where execution_id = $1 and revision = $2 and role = 'user' and image is not null order by created_at limit 4", [e.id, e.revision - 1]);
+      images = imgs.map((r) => toDataUrl(r.image_mime, r.image));
       const { rows: r } = await this.db.query(
         "select comment, line_comments from execution_reviews where execution_id = $1 and verdict = 'changes' order by created_at desc limit 1", [e.id]);
       feedback = { comment: r[0]?.comment ?? null, line_comments: r[0]?.line_comments ?? [], previous_summary: e.summary, previous_output: await this.currentOutput(e.id, e.revision - 1) };
@@ -169,7 +186,7 @@ export class AgentService {
     }
     const res = await fetch(`${aiUrl()}/agents/${e.agent}/run`, {
       method: 'POST', headers: headers(),
-      body: JSON.stringify({ ...brief, ...code, feedback, revision: e.revision, execution_id: e.id, callback_url: selfUrl() }),
+      body: JSON.stringify({ ...brief, ...code, feedback, images, revision: e.revision, execution_id: e.id, callback_url: selfUrl() }),
       signal: AbortSignal.timeout(e.agent === 'code' ? 900_000 : 180_000), // a Code run waits for sandbox installs and test runs
     });
     if (!res.ok) throw new Error(`agent service responded ${res.status}`);

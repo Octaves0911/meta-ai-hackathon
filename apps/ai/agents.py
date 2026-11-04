@@ -8,15 +8,17 @@ import os
 import re
 from typing import Literal
 
+from fastapi.responses import StreamingResponse
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 import base64
+import json
 
 from repo_picker import RepoIn
 from brief import BriefIn, CtxItem, TaskIn, brief_text_for_facts, render_brief, render_context  # noqa: F401  (TaskIn/CtxItem re-exported)
-from llm import agent_model, begin_usage, chat_json, complete_json, complete_text, sanitize_label, set_cache_key
-from files import build_pdf, markdown_to_spec
+from llm import agent_model, begin_usage, chat_json, complete_json, complete_text, sanitize_label, set_cache_key, stream_chat_json
+from files import build_pdf, build_pptx, markdown_to_spec
 from quality import Check, self_check, unsupported_facts
 from runtrace import LimitExceeded, Trace
 
@@ -60,6 +62,7 @@ class RunRequest(BriefIn):
     revision: int = Field(default=0, ge=0, le=10)
     execution_id: str | None = None   # when set, progress steps are streamed to the backend
     callback_url: str | None = Field(default=None, max_length=200)
+    images: list[str] = Field(default_factory=list, max_length=4)  # screenshots the reviewer attached in this revision's chat (base64 data URLs)
 
 
 class ArtifactOut(BaseModel):
@@ -384,6 +387,7 @@ def _slug(s: str) -> str:
 
 
 MAX_FILE_BYTES = 10 * 1024 * 1024  # per file (docs/09 §1.8)
+PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 DECK_WORDS = re.compile(r"\b(deck|slides?|presentation|pitch|keynote|powerpoint|pptx)\b", re.I)
 
 
@@ -413,7 +417,14 @@ def attach_pdfs(out: RunResponse, name: str, req: RunRequest) -> None:
             "filename": fname, "mime": "application/pdf", "pages": pages, "size": len(data), "layout": "slides" if wants_deck else "document",
             "file_b64": base64.b64encode(data).decode("ascii")}))
         if wants_deck:
-            out.notes = (out.notes + " " if out.notes else "") + "Editable PPTX is not generated yet; this PDF has one slide per page."
+            try:   # the same content as an editable PowerPoint deck, built by code from the same spec
+                pptx_data, slides = build_pptx(spec)
+            except Exception as e:  # noqa: BLE001 - the PDF is still delivered
+                out.notes = (out.notes + " " if out.notes else "") + f"PowerPoint file could not be generated ({type(e).__name__})."
+                continue
+            if len(pptx_data) <= MAX_FILE_BYTES:
+                out.artifacts.append(ArtifactOut(type="file", title="Slides (PowerPoint)", payload={
+                    "filename": fname.replace(".pdf", ".pptx"), "mime": PPTX_MIME, "kind": "deck", "slides": slides, "size": len(pptx_data), "file_b64": base64.b64encode(pptx_data).decode("ascii")}))
 
 
 # ---------------------------------------------------------------- live review chat (docs/09 §1.11)
@@ -439,6 +450,7 @@ class ChatRequest(BriefIn):
     current_output: str = Field(default="", max_length=12000)
     history: list[ChatTurn] = Field(default_factory=list, max_length=14)
     revision: int = Field(default=0, ge=0, le=10)
+    images: list[str] = Field(default_factory=list, max_length=4)  # screenshots the reviewer attached (base64 data URLs); the model can see them
 
 
 class ChatResponse(BaseModel):
@@ -457,6 +469,33 @@ def _mock_chat(req: ChatRequest) -> ChatResponse:
     return ChatResponse(reply=f"[mock] I will change the work as you asked: {m[:120]}. Click Apply & rerun when ready.", kind="change", proposed_change=m[:200])
 
 
+CHAT_RULES = (
+    "You are {persona}. You produced the work shown below and the reviewer is talking to you live while reviewing it. "
+    "Rules: (1) Questions about the work: answer from the brief and your output, honestly; if the brief does not say, say you do not know. Use kind=ask and proposed_change=\"\". "
+    "(2) A request to change the work: state precisely what you will change in `proposed_change` (1-2 sentences) and confirm in `reply`. Use kind=change. "
+    "You cannot change the work inside this chat: changes are made when the reviewer clicks Apply & rerun, so never say you already changed it. "
+    "(3) If the request is ambiguous or you need a decision, ask ONE specific question. Use kind=clarify. "
+    "If the reviewer attached a screenshot, look at it carefully: describe what you see that matters, and treat a screenshot of an error or a broken page as a change request (kind=change) naming the likely cause. "
+    "Never invent facts, dates or numbers. Keep `reply` under 120 words."
+)
+
+
+def _chat_prompt(name: str, req: ChatRequest) -> tuple[str, str]:
+    history = "\n".join(f"{'Reviewer' if t.role == 'user' else 'You'}: {t.text}" for t in req.history)
+    return (CHAT_RULES.format(persona=PERSONA[name]),
+            f"{render_brief(req)}\n\nYour current output (revision {req.revision}):\n<untrusted_source label=\"current output\">{req.current_output.replace('<', ' ').replace('>', ' ')}</untrusted_source>"
+            f"\n\nConversation so far:\n{history or '(none)'}\n\nReviewer: {req.message}" + ("\n\n(The reviewer attached the image(s) shown with this message.)" if req.images else ""))
+
+
+def _chat_result(data: dict, usage: dict) -> ChatResponse:
+    kind = data.get("kind") if data.get("kind") in ("ask", "change", "clarify") else "ask"
+    reply = str(data.get("reply") or "").strip()[:2000]
+    if not reply:
+        raise HTTPException(status_code=502, detail="agent returned an empty reply")
+    pc = str(data.get("proposed_change") or "").strip()[:500] if kind == "change" else ""
+    return ChatResponse(reply=reply, kind=kind, proposed_change=pc, usage=usage)
+
+
 async def chat_with_agent(name: str, req: ChatRequest) -> ChatResponse:
     usage = begin_usage()
     set_cache_key('chat', name, getattr(req, 'project_id', None) or req.task.title)  # every turn re-sends the same brief and output first, so later turns reuse them
@@ -464,23 +503,29 @@ async def chat_with_agent(name: str, req: ChatRequest) -> ChatResponse:
         out = _mock_chat(req)
         out.usage = usage
         return out
-    history = "\n".join(f"{'Reviewer' if t.role == 'user' else 'You'}: {t.text}" for t in req.history)
-    data = await chat_json(
-        f"You are {PERSONA[name]}. You produced the work shown below and the reviewer is talking to you live while reviewing it. "
-        "Rules: (1) Questions about the work: answer from the brief and your output, honestly; if the brief does not say, say you do not know. Use kind=ask and proposed_change=\"\". "
-        "(2) A request to change the work: state precisely what you will change in `proposed_change` (1-2 sentences) and confirm in `reply`. Use kind=change. "
-        "You cannot change the work inside this chat: changes are made when the reviewer clicks Apply & rerun, so never say you already changed it. "
-        "(3) If the request is ambiguous or you need a decision, ask ONE specific question. Use kind=clarify. "
-        "Never invent facts, dates or numbers. Keep `reply` under 120 words.",
-        f"{render_brief(req)}\n\nYour current output (revision {req.revision}):\n<untrusted_source label=\"current output\">{req.current_output.replace('<', ' ').replace('>', ' ')}</untrusted_source>"
-        f"\n\nConversation so far:\n{history or '(none)'}\n\nReviewer: {req.message}",
-        CHAT_SCHEMA, max_tokens=500, model=agent_model(name))
-    kind = data.get("kind") if data.get("kind") in ("ask", "change", "clarify") else "ask"
-    reply = str(data.get("reply") or "").strip()[:2000]
-    if not reply:
-        raise HTTPException(status_code=502, detail="agent returned an empty reply")
-    pc = str(data.get("proposed_change") or "").strip()[:500] if kind == "change" else ""
-    return ChatResponse(reply=reply, kind=kind, proposed_change=pc, usage=usage)
+    system, user = _chat_prompt(name, req)
+    data = await chat_json(system, user, CHAT_SCHEMA, max_tokens=500, model=agent_model(name), images=req.images)
+    return _chat_result(data, usage)
+
+
+async def chat_stream_with_agent(name: str, req: ChatRequest):
+    """Same turn as chat_with_agent, but the reply is yielded as it is written: ("delta", text) ... then ("done", ChatResponse)."""
+    usage = begin_usage()
+    set_cache_key('chat', name, getattr(req, 'project_id', None) or req.task.title)
+    if os.environ.get("AGENTS_MODE") == "mock":
+        out = _mock_chat(req)
+        out.usage = usage
+        for word in out.reply.split(" "):
+            yield ("delta", word + " ")
+            await asyncio.sleep(0.02)
+        yield ("done", out)
+        return
+    system, user = _chat_prompt(name, req)
+    async for kind, val in stream_chat_json(system, user, CHAT_SCHEMA, "reply", max_tokens=500, model=agent_model(name), images=req.images):
+        if kind == "delta":
+            yield ("delta", val)
+        else:
+            yield ("done", _chat_result(val, usage))
 
 
 async def _run(name: str, req: RunRequest) -> RunResponse:
@@ -518,5 +563,18 @@ def build_router(require_secret) -> APIRouter:
     @r.post("/agents/{name}/chat", response_model=ChatResponse)
     async def chat(name: AgentName, req: ChatRequest) -> ChatResponse:
         return await chat_with_agent(name, req)
+
+    @r.post("/agents/{name}/chat/stream")
+    async def chat_stream(name: AgentName, req: ChatRequest) -> StreamingResponse:
+        """Newline-delimited JSON: {"t":"delta","text":…} while the reply is written, then {"t":"done",…ChatResponse} (or {"t":"error",…})."""
+        async def gen():
+            try:
+                async for kind, val in chat_stream_with_agent(name, req):
+                    yield json.dumps({"t": "delta", "text": val} if kind == "delta" else {"t": "done", **val.model_dump()}) + "\n"
+            except HTTPException as e:
+                yield json.dumps({"t": "error", "status": e.status_code, "message": str(e.detail)}) + "\n"
+            except Exception as e:  # noqa: BLE001 - the stream must end with a clear error line, never hang
+                yield json.dumps({"t": "error", "status": 502, "message": type(e).__name__}) + "\n"
+        return StreamingResponse(gen(), media_type="application/x-ndjson", headers={"cache-control": "no-store", "x-accel-buffering": "no"})
 
     return r
