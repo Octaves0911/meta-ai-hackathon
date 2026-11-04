@@ -1,0 +1,8 @@
+# {$DOMAIN} is a hostname for automatic HTTPS (Let's Encrypt), or "http://localhost" for a local test without TLS.
+# WebSockets (the room, captions) are proxied automatically.
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy app:7860 {
+		flush_interval -1
+	}
+}

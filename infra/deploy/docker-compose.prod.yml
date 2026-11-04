@@ -1,0 +1,70 @@
+# One server: the app (web + backend + AI service + connector), Postgres with pgvector, and Caddy for automatic HTTPS.
+#   docker compose -f infra/deploy/docker-compose.prod.yml --env-file .env.prod up -d --build
+# Needs a .env.prod next to the repo root (see infra/deploy/vultr.env.example). Optional TURN relay: add --profile turn.
+name: meetpilot
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: meetpilot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
+      POSTGRES_DB: meetpilot
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meetpilot -d meetpilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: ../../.env.prod
+    environment:
+      DATABASE_URL: postgres://meetpilot:${POSTGRES_PASSWORD}@postgres:5432/meetpilot
+      BACKEND_PORT: "7860"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose: ["7860"]
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:7860/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 5
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env.prod (for example meet.example.com)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [app]
+
+  # Optional relay so video calls work between strict networks. Needs UDP 3478 and 49160-49200 open, and TURN_* set in .env.prod.
+  coturn:
+    profiles: ["turn"]
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    network_mode: host
+    # An empty TURN_USERNAME/TURN_CREDENTIAL makes coturn refuse to start, so it can never run as an open relay.
+    command: >
+      -n --log-file=stdout --fingerprint --lt-cred-mech
+      --realm=${DOMAIN}
+      --user=${TURN_USERNAME:-}:${TURN_CREDENTIAL:-}
+      --listening-port=3478 --min-port=49160 --max-port=49200
+      --no-cli --no-tls --no-dtls
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
